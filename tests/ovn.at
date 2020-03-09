@@ -4618,7 +4618,7 @@ test_dhcp() {
     fi
 
     if test $broadcast != 0; then
-        flags=8000
+        flags=0001
         reply_dst_ip=`ip_to_hex 255 255 255 255`
     else
         flags=0000
