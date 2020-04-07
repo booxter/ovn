@@ -543,7 +543,9 @@ struct ovn_datapath {
     /* The "derived" OVN port representing the instance of l3dgw_port on
      * the "redirect-chassis". */
     struct ovn_port *l3redirect_port;
-    struct ovn_port *localnet_port;
+
+    struct ovn_port **localnet_ports;
+    size_t n_localnet_ports;
 
     struct ovs_list lr_list; /* In list of logical router datapaths. */
     /* The logical router group to which this datapath belongs.
@@ -611,6 +613,7 @@ ovn_datapath_destroy(struct hmap *datapaths, struct ovn_datapath *od)
         ovn_destroy_tnlids(&od->port_tnlids);
         bitmap_free(od->ipam_info.allocated_ipv4s);
         free(od->router_ports);
+        free(od->localnet_ports);
         ovn_ls_port_group_destroy(&od->nb_pgs);
         destroy_mcast_info_for_datapath(od);
 
@@ -2053,7 +2056,11 @@ join_logical_ports(struct northd_context *ctx,
                 }
 
                 if (!strcmp(nbsp->type, "localnet")) {
-                   od->localnet_port = op;
+                   od->localnet_ports = xrealloc(
+                       od->localnet_ports,
+                       sizeof *od->localnet_ports * (od->n_localnet_ports + 1)
+                   );
+                   od->localnet_ports[od->n_localnet_ports++] = op;
                 }
 
                 op->lsp_addrs
@@ -3008,7 +3015,7 @@ ovn_port_update_sbrec(struct northd_context *ctx,
                               "reside-on-redirect-chassis", false) ||
                 op->peer == op->peer->od->l3dgw_port)) {
                 add_router_port_garp = true;
-            } else if (chassis && op->od->localnet_port) {
+            } else if (chassis && op->od->localnet_ports) {
                 add_router_port_garp = true;
             }
 
@@ -4696,23 +4703,25 @@ build_pre_acls(struct ovn_datapath *od, struct hmap *lflows)
             ds_destroy(&match_in);
             ds_destroy(&match_out);
         }
-        if (od->localnet_port) {
-            struct ds match_in = DS_EMPTY_INITIALIZER;
-            struct ds match_out = DS_EMPTY_INITIALIZER;
+        if (od->localnet_ports) {
+            for (size_t i = 0; i < od->n_localnet_ports; i++) {
+                struct ds match_in = DS_EMPTY_INITIALIZER;
+                struct ds match_out = DS_EMPTY_INITIALIZER;
 
-            ds_put_format(&match_in, "ip && inport == %s",
-                          od->localnet_port->json_key);
-            ds_put_format(&match_out, "ip && outport == %s",
-                          od->localnet_port->json_key);
-            ovn_lflow_add_with_hint(lflows, od, S_SWITCH_IN_PRE_ACL, 110,
-                                    ds_cstr(&match_in), "next;",
-                                    &od->localnet_port->nbsp->header_);
-            ovn_lflow_add_with_hint(lflows, od, S_SWITCH_OUT_PRE_ACL, 110,
-                                    ds_cstr(&match_out), "next;",
-                                    &od->localnet_port->nbsp->header_);
+                ds_put_format(&match_in, "ip && inport == %s",
+                              od->localnet_ports[i]->json_key);
+                ds_put_format(&match_out, "ip && outport == %s",
+                              od->localnet_ports[i]->json_key);
+                ovn_lflow_add_with_hint(lflows, od, S_SWITCH_IN_PRE_ACL, 110,
+                                        ds_cstr(&match_in), "next;",
+                                        &od->localnet_ports[i]->nbsp->header_);
+                ovn_lflow_add_with_hint(lflows, od, S_SWITCH_OUT_PRE_ACL, 110,
+                                        ds_cstr(&match_out), "next;",
+                                        &od->localnet_ports[i]->nbsp->header_);
 
-            ds_destroy(&match_in);
-            ds_destroy(&match_out);
+                ds_destroy(&match_in);
+                ds_destroy(&match_out);
+            }
         }
 
         /* Ingress and Egress Pre-ACL Table (Priority 110).
@@ -5953,9 +5962,11 @@ build_lswitch_rport_arp_req_flow_for_ip(struct sset *ips,
     /* Send a the packet only to the router pipeline and skip flooding it
      * in the broadcast domain (except for the localnet port).
      */
-    if (od->localnet_port) {
-        ds_put_format(&actions, "clone { outport = %s; output; }; ",
-                      od->localnet_port->json_key);
+    if (od->localnet_ports) {
+        for (size_t i = 0; i < od->n_localnet_ports; i++) {
+            ds_put_format(&actions, "clone { outport = %s; output; }; ",
+                          od->localnet_ports[i]->json_key);
+        }
     }
     ds_put_format(&actions, "outport = %s; output;", patch_op->json_key);
     ovn_lflow_add_with_hint(lflows, od, S_SWITCH_IN_L2_LKUP, priority,
@@ -6357,9 +6368,9 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
         }
 
         bool is_external = lsp_is_external(op->nbsp);
-        if (is_external && (!op->od->localnet_port ||
+        if (is_external && (!op->od->localnet_ports ||
                             !op->nbsp->ha_chassis_group)) {
-            /* If it's an external port and there is no localnet port
+            /* If it's an external port and there are no localnet ports
              * and if it doesn't belong to an HA chassis group ignore it. */
             continue;
         }
@@ -6373,84 +6384,93 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                 stage_hint = NULL;
             }
 
-            for (size_t j = 0; j < op->lsp_addrs[i].n_ipv4_addrs; j++) {
-                struct ds options_action = DS_EMPTY_INITIALIZER;
-                struct ds response_action = DS_EMPTY_INITIALIZER;
-                struct ds ipv4_addr_match = DS_EMPTY_INITIALIZER;
-                if (build_dhcpv4_action(
-                        op, op->lsp_addrs[i].ipv4_addrs[j].addr,
-                        &options_action, &response_action, &ipv4_addr_match)) {
-                    ds_clear(&match);
-                    ds_put_format(
-                        &match, "inport == %s && eth.src == %s && "
-                        "ip4.src == 0.0.0.0 && ip4.dst == 255.255.255.255 && "
-                        "udp.src == 68 && udp.dst == 67",
-                        is_external ? op->od->localnet_port->json_key :
-                            op->json_key,
-                        op->lsp_addrs[i].ea_s);
+            size_t jmax = is_external? op->od->n_localnet_ports: 1;
+            for (size_t j = 0; j < jmax; j++) {
+                for (size_t k = 0; k < op->lsp_addrs[i].n_ipv4_addrs; k++) {
+                    struct ds options_action = DS_EMPTY_INITIALIZER;
+                    struct ds response_action = DS_EMPTY_INITIALIZER;
+                    struct ds ipv4_addr_match = DS_EMPTY_INITIALIZER;
+                    if (build_dhcpv4_action(
+                            op, op->lsp_addrs[i].ipv4_addrs[k].addr,
+                            &options_action, &response_action,
+                            &ipv4_addr_match)) {
+                        ds_clear(&match);
+                        ds_put_format(
+                            &match,
+                            "inport == %s && eth.src == %s && "
+                            "ip4.src == 0.0.0.0 && "
+                            "ip4.dst == 255.255.255.255 && "
+                            "udp.src == 68 && udp.dst == 67",
+                            is_external ? op->od->localnet_ports[j]->json_key :
+                                op->json_key,
+                            op->lsp_addrs[i].ea_s);
 
-                    if (is_external) {
-                        ds_put_format(&match, " && is_chassis_resident(%s)",
-                                      op->json_key);
+                        if (is_external) {
+                            ds_put_format(
+                                &match, " && is_chassis_resident(%s)",
+                                op->json_key);
+                        }
+
+                        ovn_lflow_add_with_hint(lflows, op->od,
+                                                S_SWITCH_IN_DHCP_OPTIONS, 100,
+                                                ds_cstr(&match),
+                                                ds_cstr(&options_action),
+                                                stage_hint);
+                        ds_clear(&match);
+                        /* Allow ip4.src = OFFER_IP and
+                         * ip4.dst = {SERVER_IP, 255.255.255.255} for the below
+                         * cases
+                         *  -  When the client wants to renew the IP by sending
+                         *     the DHCPREQUEST to the server ip.
+                         *  -  When the client wants to renew the IP by
+                         *     broadcasting the DHCPREQUEST.
+                         */
+                        ds_put_format(
+                            &match, "inport == %s && eth.src == %s && "
+                            "%s && udp.src == 68 && udp.dst == 67",
+                            is_external ? op->od->localnet_ports[j]->json_key :
+                                op->json_key,
+                            op->lsp_addrs[i].ea_s, ds_cstr(&ipv4_addr_match));
+
+                        if (is_external) {
+                            ds_put_format(
+                                &match, " && is_chassis_resident(%s)",
+                                op->json_key);
+                        }
+
+                        ovn_lflow_add_with_hint(lflows, op->od,
+                                                S_SWITCH_IN_DHCP_OPTIONS, 100,
+                                                ds_cstr(&match),
+                                                ds_cstr(&options_action),
+                                                stage_hint);
+                        ds_clear(&match);
+
+                        /* If REGBIT_DHCP_OPTS_RESULT is set, it means the
+                         * put_dhcp_opts action  is successful. */
+                        ds_put_format(
+                            &match, "inport == %s && eth.src == %s && "
+                            "ip4 && udp.src == 68 && udp.dst == 67"
+                            " && "REGBIT_DHCP_OPTS_RESULT,
+                            is_external ? op->od->localnet_ports[j]->json_key :
+                                op->json_key,
+                            op->lsp_addrs[i].ea_s);
+
+                        if (is_external) {
+                            ds_put_format(
+                                &match, " && is_chassis_resident(%s)",
+                                op->json_key);
+                        }
+
+                        ovn_lflow_add_with_hint(lflows, op->od,
+                                                S_SWITCH_IN_DHCP_RESPONSE, 100,
+                                                ds_cstr(&match),
+                                                ds_cstr(&response_action),
+                                                stage_hint);
+                        ds_destroy(&options_action);
+                        ds_destroy(&response_action);
+                        ds_destroy(&ipv4_addr_match);
+                        break;
                     }
-
-                    ovn_lflow_add_with_hint(lflows, op->od,
-                                            S_SWITCH_IN_DHCP_OPTIONS, 100,
-                                            ds_cstr(&match),
-                                            ds_cstr(&options_action),
-                                            stage_hint);
-                    ds_clear(&match);
-                    /* Allow ip4.src = OFFER_IP and
-                     * ip4.dst = {SERVER_IP, 255.255.255.255} for the below
-                     * cases
-                     *  -  When the client wants to renew the IP by sending
-                     *     the DHCPREQUEST to the server ip.
-                     *  -  When the client wants to renew the IP by
-                     *     broadcasting the DHCPREQUEST.
-                     */
-                    ds_put_format(
-                        &match, "inport == %s && eth.src == %s && "
-                        "%s && udp.src == 68 && udp.dst == 67",
-                        is_external ? op->od->localnet_port->json_key :
-                            op->json_key,
-                        op->lsp_addrs[i].ea_s, ds_cstr(&ipv4_addr_match));
-
-                    if (is_external) {
-                        ds_put_format(&match, " && is_chassis_resident(%s)",
-                                      op->json_key);
-                    }
-
-                    ovn_lflow_add_with_hint(lflows, op->od,
-                                            S_SWITCH_IN_DHCP_OPTIONS, 100,
-                                            ds_cstr(&match),
-                                            ds_cstr(&options_action),
-                                            stage_hint);
-                    ds_clear(&match);
-
-                    /* If REGBIT_DHCP_OPTS_RESULT is set, it means the
-                     * put_dhcp_opts action  is successful. */
-                    ds_put_format(
-                        &match, "inport == %s && eth.src == %s && "
-                        "ip4 && udp.src == 68 && udp.dst == 67"
-                        " && "REGBIT_DHCP_OPTS_RESULT,
-                        is_external ? op->od->localnet_port->json_key :
-                            op->json_key,
-                        op->lsp_addrs[i].ea_s);
-
-                    if (is_external) {
-                        ds_put_format(&match, " && is_chassis_resident(%s)",
-                                      op->json_key);
-                    }
-
-                    ovn_lflow_add_with_hint(lflows, op->od,
-                                            S_SWITCH_IN_DHCP_RESPONSE, 100,
-                                            ds_cstr(&match),
-                                            ds_cstr(&response_action),
-                                            stage_hint);
-                    ds_destroy(&options_action);
-                    ds_destroy(&response_action);
-                    ds_destroy(&ipv4_addr_match);
-                    break;
                 }
             }
 
@@ -6460,43 +6480,46 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                 stage_hint = NULL;
             }
 
-            for (size_t j = 0; j < op->lsp_addrs[i].n_ipv6_addrs; j++) {
-                struct ds options_action = DS_EMPTY_INITIALIZER;
-                struct ds response_action = DS_EMPTY_INITIALIZER;
-                if (build_dhcpv6_action(
-                        op, &op->lsp_addrs[i].ipv6_addrs[j].addr,
-                        &options_action, &response_action)) {
-                    ds_clear(&match);
-                    ds_put_format(
-                        &match, "inport == %s && eth.src == %s"
-                        " && ip6.dst == ff02::1:2 && udp.src == 546 &&"
-                        " udp.dst == 547",
-                        is_external ? op->od->localnet_port->json_key :
-                            op->json_key,
-                        op->lsp_addrs[i].ea_s);
+            for (size_t j = 0; j < jmax; j++) {
+                for (size_t k = 0; k < op->lsp_addrs[i].n_ipv6_addrs; k++) {
+                    struct ds options_action = DS_EMPTY_INITIALIZER;
+                    struct ds response_action = DS_EMPTY_INITIALIZER;
+                    if (build_dhcpv6_action(
+                            op, &op->lsp_addrs[i].ipv6_addrs[k].addr,
+                            &options_action, &response_action)) {
+                        ds_clear(&match);
+                        ds_put_format(
+                            &match, "inport == %s && eth.src == %s"
+                            " && ip6.dst == ff02::1:2 && udp.src == 546 &&"
+                            " udp.dst == 547",
+                            is_external ? op->od->localnet_ports[j]->json_key :
+                                op->json_key,
+                            op->lsp_addrs[i].ea_s);
 
-                    if (is_external) {
-                        ds_put_format(&match, " && is_chassis_resident(%s)",
-                                      op->json_key);
+                        if (is_external) {
+                            ds_put_format(
+                                &match, " && is_chassis_resident(%s)",
+                                op->json_key);
+                        }
+
+                        ovn_lflow_add_with_hint(lflows, op->od,
+                                                S_SWITCH_IN_DHCP_OPTIONS, 100,
+                                                ds_cstr(&match),
+                                                ds_cstr(&options_action),
+                                                stage_hint);
+
+                        /* If REGBIT_DHCP_OPTS_RESULT is set to 1, it means the
+                         * put_dhcpv6_opts action is successful */
+                        ds_put_cstr(&match, " && "REGBIT_DHCP_OPTS_RESULT);
+                        ovn_lflow_add_with_hint(lflows, op->od,
+                                                S_SWITCH_IN_DHCP_RESPONSE, 100,
+                                                ds_cstr(&match),
+                                                ds_cstr(&response_action),
+                                                stage_hint);
+                        ds_destroy(&options_action);
+                        ds_destroy(&response_action);
+                        break;
                     }
-
-                    ovn_lflow_add_with_hint(lflows, op->od,
-                                            S_SWITCH_IN_DHCP_OPTIONS, 100,
-                                            ds_cstr(&match),
-                                            ds_cstr(&options_action),
-                                            stage_hint);
-
-                    /* If REGBIT_DHCP_OPTS_RESULT is set to 1, it means the
-                     * put_dhcpv6_opts action is successful */
-                    ds_put_cstr(&match, " && "REGBIT_DHCP_OPTS_RESULT);
-                    ovn_lflow_add_with_hint(lflows, op->od,
-                                            S_SWITCH_IN_DHCP_RESPONSE, 100,
-                                            ds_cstr(&match),
-                                            ds_cstr(&response_action),
-                                            stage_hint);
-                    ds_destroy(&options_action);
-                    ds_destroy(&response_action);
-                    break;
                 }
             }
         }
@@ -6555,7 +6578,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
 
     HMAP_FOR_EACH (op, key_node, ports) {
         if (!op->nbsp || !lsp_is_external(op->nbsp) ||
-            !op->od->localnet_port) {
+            !op->od->localnet_ports) {
            continue;
         }
 
@@ -6570,36 +6593,42 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                 for (size_t k = 0; k < rp->n_lsp_addrs; k++) {
                     for (size_t l = 0; l < rp->lsp_addrs[k].n_ipv4_addrs;
                          l++) {
-                        ds_clear(&match);
-                        ds_put_format(
-                            &match, "inport == %s && eth.src == %s"
-                            " && !is_chassis_resident(%s)"
-                            " && arp.tpa == %s && arp.op == 1",
-                            op->od->localnet_port->json_key,
-                            op->lsp_addrs[i].ea_s, op->json_key,
-                            rp->lsp_addrs[k].ipv4_addrs[l].addr_s);
-                        ovn_lflow_add_with_hint(lflows, op->od,
-                                                S_SWITCH_IN_EXTERNAL_PORT,
-                                                100, ds_cstr(&match), "drop;",
-                                                &op->nbsp->header_);
+                        for (size_t m = 0; m < op->od->n_localnet_ports; m++) {
+                            ds_clear(&match);
+                            ds_put_format(
+                                &match, "inport == %s && eth.src == %s"
+                                " && !is_chassis_resident(%s)"
+                                " && arp.tpa == %s && arp.op == 1",
+                                op->od->localnet_ports[m]->json_key,
+                                op->lsp_addrs[i].ea_s, op->json_key,
+                                rp->lsp_addrs[k].ipv4_addrs[l].addr_s);
+                            ovn_lflow_add_with_hint(
+                                lflows, op->od,
+                                S_SWITCH_IN_EXTERNAL_PORT, 100,
+                                ds_cstr(&match), "drop;",
+                                &op->nbsp->header_);
+                        }
                     }
                     for (size_t l = 0; l < rp->lsp_addrs[k].n_ipv6_addrs;
                          l++) {
-                        ds_clear(&match);
-                        ds_put_format(
-                            &match, "inport == %s && eth.src == %s"
-                            " && !is_chassis_resident(%s)"
-                            " && nd_ns && ip6.dst == {%s, %s} && "
-                            "nd.target == %s",
-                            op->od->localnet_port->json_key,
-                            op->lsp_addrs[i].ea_s, op->json_key,
-                            rp->lsp_addrs[k].ipv6_addrs[l].addr_s,
-                            rp->lsp_addrs[k].ipv6_addrs[l].sn_addr_s,
-                            rp->lsp_addrs[k].ipv6_addrs[l].addr_s);
-                        ovn_lflow_add_with_hint(lflows, op->od,
-                                                S_SWITCH_IN_EXTERNAL_PORT, 100,
-                                                ds_cstr(&match), "drop;",
-                                                &op->nbsp->header_);
+                        for (size_t m = 0; m < op->od->n_localnet_ports; m++) {
+                            ds_clear(&match);
+                            ds_put_format(
+                                &match, "inport == %s && eth.src == %s"
+                                " && !is_chassis_resident(%s)"
+                                " && nd_ns && ip6.dst == {%s, %s} && "
+                                "nd.target == %s",
+                                op->od->localnet_ports[m]->json_key,
+                                op->lsp_addrs[i].ea_s, op->json_key,
+                                rp->lsp_addrs[k].ipv6_addrs[l].addr_s,
+                                rp->lsp_addrs[k].ipv6_addrs[l].sn_addr_s,
+                                rp->lsp_addrs[k].ipv6_addrs[l].addr_s);
+                            ovn_lflow_add_with_hint(
+                                lflows, op->od,
+                                S_SWITCH_IN_EXTERNAL_PORT, 100,
+                                ds_cstr(&match), "drop;",
+                                &op->nbsp->header_);
+                        }
                     }
                 }
             }
@@ -6821,7 +6850,7 @@ build_lswitch_flows(struct hmap *datapaths, struct hmap *ports,
                               ETH_ADDR_ARGS(mac));
                 if (op->peer->od->l3dgw_port
                     && op->peer->od->l3redirect_port
-                    && op->od->localnet_port) {
+                    && op->od->localnet_ports) {
                     bool add_chassis_resident_check = false;
                     if (op->peer == op->peer->od->l3dgw_port) {
                         /* The peer of this port represents a distributed
@@ -8123,7 +8152,7 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
                           op->lrp_networks.ipv4_addrs[i].addr_s);
 
             if (op->od->l3dgw_port && op->od->l3redirect_port && op->peer
-                && op->peer->od->localnet_port) {
+                && op->peer->od->localnet_ports) {
                 bool add_chassis_resident_check = false;
                 if (op == op->od->l3dgw_port) {
                     /* Traffic with eth.src = l3dgw_port->lrp_networks.ea_s
