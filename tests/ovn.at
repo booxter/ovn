@@ -2325,6 +2325,7 @@ ovn-nbctl --wait=sb sync
 ovn-sbctl dump-flows
 
 OVN_POPULATE_ARP
+exit 1
 
 # XXX This is now the 3rd copy of these functions in this file ...
 

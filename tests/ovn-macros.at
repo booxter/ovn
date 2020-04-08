@@ -286,4 +286,8 @@ ovn_populate_arp__() {
 }
 m4_divert_pop([PREPARE_TESTS])
 
-m4_define([OVN_POPULATE_ARP], [AT_CHECK(ovn_populate_arp__, [0], [ignore])])
+m4_define([OVN_POPULATE_ARP], [
+    AT_CHECK(ovn_populate_arp__, [ignore], [ignore])
+    echo 1
+    exit 1
+])
