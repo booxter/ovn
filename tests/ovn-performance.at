@@ -251,13 +251,12 @@ for i in `seq 1 5`; do
     for j in `seq 1 5`; do
         if [[ $i -ne $j ]] ; then
             OVS_WAIT_UNTIL([
-                test $(as hv$i ovs-vsctl list interface ovn-hv$j-0 | \
+                test $(as hv$i ovs-vsctl list interface ovn-hv$i-hv$j-0 | \
             grep -c tunnel_egress_iface_carrier=up) -eq 1
             ])
         fi
     done
 done
-
 
 # Add router lr1
 OVN_CONTROLLER_EXPECT_NO_HIT(

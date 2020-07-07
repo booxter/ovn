@@ -46,7 +46,7 @@ bool chassis_cleanup(struct ovsdb_idl_txn *ovnsb_idl_txn,
 bool chassis_get_mac(const struct sbrec_chassis *chassis,
                      const char *bridge_mapping,
                      struct eth_addr *chassis_mac);
-const char * get_chassis_mac_mappings(const struct smap *ext_ids);
-
+const char * get_chassis_mac_mappings(const struct smap *ext_ids,
+                                      const char *chassis_id);
 
 #endif /* controller/chassis.h */
