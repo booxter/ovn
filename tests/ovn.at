@@ -38,6 +38,20 @@ m4_divert_text([PREPARE_TESTS],
         test $rcv_n -ge $exp_n])
      sort $exp_text > expout
    }
+   ovn_check_packets_remove_rarp__ () {
+     echo "$3: checking packets in $1 against $2:"
+     rcv_pcap=$1
+     rcv_text=`echo "$rcv_pcap.packets" | sed 's/\.pcap//'`
+     exp_text=$2
+     exp_n=`wc -l < "$exp_text"`
+     OVS_WAIT_UNTIL(
+       [$PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" $rcv_pcap > $rcv_text
+        sed -i '/^ffffffffffff............8035/d' $rcv_text
+        rcv_n=`wc -l < "$rcv_text"`
+        echo "rcv_n=$rcv_n exp_n=$exp_n"
+        test $rcv_n -ge $exp_n])
+     sort $exp_text > expout
+   }
 ])
 
 m4_define([OVN_CHECK_PACKETS],
@@ -46,6 +60,10 @@ m4_define([OVN_CHECK_PACKETS],
 
 m4_define([OVN_CHECK_PACKETS_REMOVE_BROADCAST],
   [ovn_check_packets_remove_broadcast__ "$1" "$2" "__file__:__line__"
+   AT_CHECK([sort $rcv_text], [0], [expout])])
+
+m4_define([OVN_CHECK_PACKETS_REMOVE_RARP],
+  [ovn_check_packets_remove_rarp__ "$1" "$2" "__file__:__line__"
    AT_CHECK([sort $rcv_text], [0], [expout])])
 
 m4_define([OVN_CHECK_PACKETS_CONTAIN],
@@ -3484,6 +3502,11 @@ ovn_start
 # Configure the Northbound database
 ovn-nbctl ls-add lsw0
 
+ovn-nbctl lsp-add lsw0 n1
+ovn-nbctl lsp-set-addresses n1 unknown
+ovn-nbctl lsp-set-type n1 localnet
+ovn-nbctl lsp-set-options n1 network_name=physnet
+
 ovn-nbctl lsp-add lsw0 lp1
 ovn-nbctl lsp-set-addresses lp1 f0:00:00:00:00:01
 
@@ -3503,6 +3526,7 @@ sim_add hv1
 as hv1
 ovs-vsctl add-br br-phys
 ovn_attach n1 br-phys 192.168.0.1
+ovs-vsctl set open . external_ids:ovn-bridge-mappings="physnet1:br-phys2,physnet:br-phys"
 ovs-vsctl add-port br-int vif1 -- set Interface vif1 external-ids:iface-id=lp1 options:tx_pcap=hv1/vif1-tx.pcap options:rxq_pcap=hv1/vif1-rx.pcap ofport-request=1
 
 # Create hypervisor hv2 connected to n1
@@ -3510,6 +3534,7 @@ sim_add hv2
 as hv2
 ovs-vsctl add-br br-phys
 ovn_attach n1 br-phys 192.168.0.2
+ovs-vsctl set open . external_ids:ovn-bridge-mappings="physnet1:br-phys2,physnet:br-phys"
 ovs-vsctl add-port br-int vif2 -- set Interface vif2 external-ids:iface-id=lp2 options:tx_pcap=hv2/vif2-tx.pcap options:rxq_pcap=hv2/vif2-rx.pcap ofport-request=1
 
 # Create hypervisor hv_gw connected to n1 and n2
@@ -3520,7 +3545,7 @@ ovs-vsctl add-br br-phys
 ovn_attach n1 br-phys 192.168.0.3
 ovs-vsctl add-br br-phys2
 net_attach n2 br-phys2
-ovs-vsctl set open . external_ids:ovn-bridge-mappings="physnet1:br-phys2"
+ovs-vsctl set open . external_ids:ovn-bridge-mappings="physnet1:br-phys2,physnet:br-phys"
 
 # Add hv3 on the other side of the GW
 sim_add hv3
@@ -3528,6 +3553,7 @@ as hv3
 ovs-vsctl add-br br-phys
 net_attach n2 br-phys
 ovs-vsctl add-port br-phys vif3 -- set Interface vif3 options:tx_pcap=hv3/vif3-tx.pcap options:rxq_pcap=hv3/vif3-rx.pcap ofport-request=1
+ovs-vsctl set open . external_ids:ovn-bridge-mappings="physnet1:br-phys2,physnet:br-phys"
 
 
 # Pre-populate the hypervisors' ARP tables so that we don't lose any
@@ -3621,7 +3647,7 @@ as hv3 ovs-ofctl -O OpenFlow13 dump-flows br-phys
 
 # Now check the packets actually received against the ones expected.
 for i in 1 2 3; do
-    OVN_CHECK_PACKETS([hv$i/vif$i-tx.pcap], [$i.expected])
+    OVN_CHECK_PACKETS_REMOVE_RARP([hv$i/vif$i-tx.pcap], [$i.expected])
 done
 AT_CLEANUP
 
