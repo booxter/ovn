@@ -2199,12 +2199,19 @@ ovn_start
 # Create hypervisors hv[12].
 # Add vif1[12] to hv1, vif2[12] to hv2
 ovn-nbctl ls-add lsw0
+
+ovn-nbctl lsp-add lsw0 n1
+ovn-nbctl lsp-set-addresses n1 unknown
+ovn-nbctl lsp-set-type n1 localnet
+ovn-nbctl lsp-set-options n1 network_name=n1
+
 net_add n1
 for i in 1 2; do
     sim_add hv$i
     as hv$i
     ovs-vsctl add-br br-phys
     ovn_attach n1 br-phys 192.168.0.$i
+    ovs-vsctl set open . external-ids:ovn-bridge-mappings=n1:br-phys
 
     for j in 1 2; do
         ovs-vsctl add-port br-int vif$i$j -- set Interface vif$i$j external-ids:iface-id=lp$i$j options:tx_pcap=hv$i/vif$i$j-tx.pcap options:rxq_pcap=hv$i/vif$i$j-rx.pcap ofport-request=$i$j
@@ -2337,7 +2344,7 @@ as hv3 ovs-ofctl -O OpenFlow13 dump-flows br-int
 # Now check the packets actually received against the ones expected.
 for i in 1 2; do
     for j in 1 2; do
-        OVN_CHECK_PACKETS([hv$i/vif$i$j-tx.pcap], [$i$j.expected])
+        OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv$i/vif$i$j-tx.pcap], [$i$j.expected])
     done
 done
 
