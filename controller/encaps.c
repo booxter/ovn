@@ -152,8 +152,8 @@ encaps_tunnel_id_match(const char *tunnel_id, const char *chassis_id,
 
 static void
 tunnel_add(struct tunnel_ctx *tc, const struct sbrec_sb_global *sbg,
-           const char *this_chassis_id, const char *new_chassis_id,
-           const struct sbrec_encap *encap)
+           const struct sbrec_chassis *this_chassis,
+           const char *new_chassis_id, const struct sbrec_encap *encap)
 {
     struct smap options = SMAP_INITIALIZER(&options);
     smap_add(&options, "remote_ip", encap->ip);
@@ -161,6 +161,9 @@ tunnel_add(struct tunnel_ctx *tc, const struct sbrec_sb_global *sbg,
     const char *dst_port = smap_get(&encap->options, "dst_port");
     const char *csum = smap_get(&encap->options, "csum");
     char *tunnel_entry_id = NULL;
+
+    struct sbrec_encap *local_encap = preferred_encap(this_chassis);
+    smap_add(&options, "local_ip", local_encap->ip);
 
     /*
      * Since a chassis may have multiple encap-ip, we can't just add the
@@ -200,7 +203,7 @@ tunnel_add(struct tunnel_ctx *tc, const struct sbrec_sb_global *sbg,
      * its name, otherwise generate a new, unique name. */
     char *port_name = (chassis
                        ? xstrdup(chassis->port->name)
-                       : tunnel_create_name(tc, this_chassis_id,
+                       : tunnel_create_name(tc, this_chassis->name,
                                             new_chassis_id));
     if (!port_name) {
         VLOG_WARN("Unable to allocate unique name for '%s' tunnel",
@@ -251,7 +254,7 @@ preferred_encap(const struct sbrec_chassis *chassis_rec)
  */
 static int
 chassis_tunnel_add(const struct sbrec_chassis *chassis_rec,
-                   const char *this_chassis_id,
+                   const struct sbrec_chassis *this_chassis,
                    const struct sbrec_sb_global *sbg, struct tunnel_ctx *tc)
 {
     struct sbrec_encap *encap = preferred_encap(chassis_rec);
@@ -268,7 +271,7 @@ chassis_tunnel_add(const struct sbrec_chassis *chassis_rec,
         if (tun_type != pref_type) {
             continue;
         }
-        tunnel_add(tc, sbg, this_chassis_id, chassis_rec->name,
+        tunnel_add(tc, sbg, this_chassis, chassis_rec->name,
                    chassis_rec->encaps[i]);
         tuncnt++;
     }
@@ -394,8 +397,7 @@ encaps_run(struct ovsdb_idl_txn *ovs_idl_txn,
                 continue;
             }
 
-            if (chassis_tunnel_add(chassis_rec, this_chassis->name,
-                                   sbg, &tc) == 0) {
+            if (chassis_tunnel_add(chassis_rec, this_chassis, sbg, &tc) == 0) {
                 VLOG_INFO("Creating encap for '%s' failed", chassis_rec->name);
                 continue;
             }
