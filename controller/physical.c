@@ -37,6 +37,7 @@
 #include "openvswitch/ofp-parse.h"
 #include "ovn-controller.h"
 #include "lib/chassis-index.h"
+#include "lib/mcast-group-index.h"
 #include "lib/ovn-sb-idl.h"
 #include "lib/ovn-util.h"
 #include "physical.h"
@@ -1372,6 +1373,12 @@ out:
     }
 }
 
+static int64_t
+get_vxlan_port_key(int64_t mc_key)
+{
+    return mc_key - OVN_MIN_MULTICAST + OVN_VXLAN_MIN_MULTICAST;
+}
+
 static void
 consider_mc_group(enum mf_field_id mff_ovn_geneve,
                   const struct simap *ct_zones,
@@ -1389,6 +1396,7 @@ consider_mc_group(enum mf_field_id mff_ovn_geneve,
     }
 
     struct sset remote_chassis = SSET_INITIALIZER(&remote_chassis);
+    struct sset vtep_chassis = SSET_INITIALIZER(&vtep_chassis);
     struct match match;
 
     match_init_catchall(&match);
@@ -1397,7 +1405,8 @@ consider_mc_group(enum mf_field_id mff_ovn_geneve,
 
     /* Go through all of the ports in the multicast group:
      *
-     *    - For remote ports, add the chassis to 'remote_chassis'.
+     *    - For remote ports, add the chassis to 'remote_chassis' or
+     *      'vtep_chassis'.
      *
      *    - For local ports (other than logical patch ports), add actions
      *      to 'ofpacts' to set the output port and resubmit.
@@ -1445,7 +1454,11 @@ consider_mc_group(enum mf_field_id mff_ovn_geneve,
             /* Add remote chassis only when localnet port not exist,
              * otherwise multicast will reach remote ports through localnet
              * port. */
-            sset_add(&remote_chassis, port->chassis->name);
+            if (smap_get_bool(&port->chassis->other_config, "is-vtep", false)) {
+                sset_add(&vtep_chassis, port->chassis->name);
+            } else {
+                sset_add(&remote_chassis, port->chassis->name);
+            }
         }
     }
 
@@ -1470,7 +1483,8 @@ consider_mc_group(enum mf_field_id mff_ovn_geneve,
      *
      * Handle output to the remote chassis in the multicast group, if
      * any. */
-    if (!sset_is_empty(&remote_chassis) || remote_ofpacts.size > 0) {
+    if (!sset_is_empty(&remote_chassis) ||
+            !sset_is_empty(&vtep_chassis) || remote_ofpacts.size > 0) {
         if (remote_ofpacts.size > 0) {
             /* Following delivery to logical patch ports, restore the
              * multicast group as the logical output port. */
@@ -1489,7 +1503,24 @@ consider_mc_group(enum mf_field_id mff_ovn_geneve,
 
             if (!prev || tun->type != prev->type) {
                 put_encapsulation(mff_ovn_geneve, tun, mc->datapath,
-                                  mc->tunnel_key, true, &remote_ofpacts);
+                                  get_vxlan_port_key(mc->tunnel_key), false,
+                                  &remote_ofpacts);
+                prev = tun;
+            }
+            ofpact_put_OUTPUT(&remote_ofpacts)->port = tun->ofport;
+        }
+
+        SSET_FOR_EACH (chassis_name, &vtep_chassis) {
+            const struct chassis_tunnel *tun
+                = chassis_tunnel_find(chassis_tunnels, chassis_name, NULL);
+            if (!tun) {
+                continue;
+            }
+
+            if (!prev || tun->type != prev->type) {
+                put_encapsulation(mff_ovn_geneve, tun, mc->datapath,
+                                  mc->tunnel_key, false,
+                                  &remote_ofpacts);
                 prev = tun;
             }
             ofpact_put_OUTPUT(&remote_ofpacts)->port = tun->ofport;
@@ -1658,6 +1689,26 @@ physical_run(struct physical_ctx *p_ctx,
 
         ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 100, 0, &match,
                         &ofpacts, hc_uuid);
+    }
+
+    /* Add VXLAN specific flows for multicast outports */
+    HMAP_FOR_EACH (tun, hmap_node, p_ctx->chassis_tunnels) {
+        if (tun->type == VXLAN) {
+            for (uint32_t port_key = OVN_VXLAN_MIN_MULTICAST; port_key <= OVN_VXLAN_MAX_MULTICAST; port_key++) {
+                ofpbuf_clear(&ofpacts);
+
+                struct match match = MATCH_CATCHALL_INITIALIZER;
+                match_set_in_port(&match, tun->ofport);
+                match_set_tun_id_masked(&match, htonll(port_key), 0xfff000);
+
+                put_load(port_key, MFF_LOG_OUTPORT, 0, 12, &ofpacts);
+                put_move(MFF_TUN_ID, 0, MFF_LOG_DATAPATH, 0, 12, &ofpacts);
+                put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
+
+                ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 105, 0, &match,
+                                &ofpacts, hc_uuid);
+            }
+        }
     }
 
     /* Handle ramp switch encapsulations. */

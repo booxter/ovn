@@ -1,7 +1,7 @@
 {
     "name": "OVN_Southbound",
     "version": "20.20.0",
-    "cksum": "605270161 26670",
+    "cksum": "763569232 26669",
     "tables": {
         "SB_Global": {
             "columns": {
@@ -133,7 +133,7 @@
                 "name": {"type": "string"},
                 "tunnel_key": {
                     "type": {"key": {"type": "integer",
-                                     "minInteger": 32768,
+                                     "minInteger": 2048,
                                      "maxInteger": 65535}}},
                 "ports": {"type": {"key": {"type": "uuid",
                                            "refTable": "Port_Binding",
