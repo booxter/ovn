@@ -1510,6 +1510,7 @@ consider_mc_group(enum mf_field_id mff_ovn_geneve,
             ofpact_put_OUTPUT(&remote_ofpacts)->port = tun->ofport;
         }
 
+        /* todo: consolidate */
         SSET_FOR_EACH (chassis_name, &vtep_chassis) {
             const struct chassis_tunnel *tun
                 = chassis_tunnel_find(chassis_tunnels, chassis_name, NULL);
@@ -1694,14 +1695,17 @@ physical_run(struct physical_ctx *p_ctx,
     /* Add VXLAN specific flows for multicast outports */
     HMAP_FOR_EACH (tun, hmap_node, p_ctx->chassis_tunnels) {
         if (tun->type == VXLAN) {
-            for (uint32_t port_key = OVN_VXLAN_MIN_MULTICAST; port_key <= OVN_VXLAN_MAX_MULTICAST; port_key++) {
+            /* todo: this is wrong, should probably have an action to do arithmetics */
+            for (uint32_t port_key = OVN_VXLAN_MIN_MULTICAST; port_key < OVN_VXLAN_MIN_IP_MULTICAST; port_key++) {
                 ofpbuf_clear(&ofpacts);
 
                 struct match match = MATCH_CATCHALL_INITIALIZER;
                 match_set_in_port(&match, tun->ofport);
+                /* todo: does this match really work? */
                 match_set_tun_id_masked(&match, htonll(port_key), 0xfff000);
 
-                put_load(port_key, MFF_LOG_OUTPORT, 0, 12, &ofpacts);
+                VLOG_ERR("IHAR set port_key = %d", port_key - OVN_VXLAN_MIN_MULTICAST + OVN_MIN_MULTICAST);
+                put_load(port_key - OVN_VXLAN_MIN_MULTICAST + OVN_MIN_MULTICAST, MFF_LOG_OUTPORT, 0, 12, &ofpacts);
                 put_move(MFF_TUN_ID, 0, MFF_LOG_DATAPATH, 0, 12, &ofpacts);
                 put_resubmit(OFTABLE_LOCAL_OUTPUT, &ofpacts);
 

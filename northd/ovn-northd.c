@@ -3835,7 +3835,7 @@ ovn_port_allocate_key(struct hmap *ports, struct ovn_port *op)
 {
     if (!op->tunnel_key) {
         op->tunnel_key = ovn_allocate_tnlid(&op->od->port_tnlids, "port",
-                                            1, (1u << 15) - 1,
+                                            1, (1u << 11) - 1,
                                             &op->od->port_key_hint);
         if (!op->tunnel_key) {
             if (op->sb) {
