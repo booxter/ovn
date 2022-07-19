@@ -228,6 +228,7 @@ enum ovn_stage {
 #define REGBIT_LOOKUP_NEIGHBOR_IP_RESULT "reg9[3]"
 #define REGBIT_DST_NAT_IP_LOCAL "reg9[4]"
 #define REGBIT_KNOWN_ECMP_NH    "reg9[5]"
+#define REGBIT_SIZE_ASSESSED    "reg9[6]"
 
 /* Register to store the eth address associated to a router port for packets
  * received in S_ROUTER_IN_ADMISSION.
