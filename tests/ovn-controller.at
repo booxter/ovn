@@ -113,6 +113,12 @@ check_patches \
     'br-int  patch-br-int-to-localnet2 patch-localnet2-to-br-int' \
     'br-eth0 patch-localnet2-to-br-int patch-br-int-to-localnet2'
 
+AT_CHECK([ovs-vsctl set Open_vSwitch . external-ids:ovn-bridge-mappings=physnet1:br-eth2,physnet2:br-eth1])
+check_bridge_mappings "physnet1:br-eth2,physnet2:br-eth1"
+check_patches \
+    'br-int  patch-br-int-to-localnet2 patch-localnet2-to-br-int' \
+    'br-eth2 patch-localnet2-to-br-int patch-br-int-to-localnet2'
+
 # Delete the mapping and the ovn-bridge-mapping patch ports should go away.
 check ovn-appctl -t ovn-controller debug/ignore-startup-delay
 AT_CHECK([ovs-vsctl remove Open_vSwitch . external-ids ovn-bridge-mappings])
