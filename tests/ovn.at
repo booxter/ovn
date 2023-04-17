@@ -15082,7 +15082,7 @@ AT_CLEANUP
 
 OVN_FOR_EACH_NORTHD([
 AT_SETUP([localnet connectivity with multiple requested-chassis, path mtu discovery])
-AT_KEYWORDS([multi-chassis])
+AT_KEYWORDS([ovntest])
 ovn_start
 
 net_add n1
@@ -15094,13 +15094,23 @@ for i in 1 2; do
     check ovs-vsctl set open . external-ids:ovn-bridge-mappings=phys:br-phys
 done
 
+first_mac=00:00:00:00:00:01
+second_mac=00:00:00:00:00:02
+migrator_mac=00:00:00:00:00:f0
+first_ip=10.0.0.1
+second_ip=10.0.0.2
+migrator_ip=10.0.0.10
+first_ip6=abcd::1
+second_ip6=abcd::2
+migrator_ip6=abcd::f0
+
 check ovn-nbctl ls-add ls0 -- add Logical_Switch ls0 other_config vlan-passthru=true
 check ovn-nbctl lsp-add ls0 first
 check ovn-nbctl lsp-add ls0 second
 check ovn-nbctl lsp-add ls0 migrator
-check ovn-nbctl lsp-set-addresses first "00:00:00:00:00:01 10.0.0.1 ff::01"
-check ovn-nbctl lsp-set-addresses second "00:00:00:00:00:02 10.0.0.2 ff::02"
-check ovn-nbctl lsp-set-addresses migrator "00:00:00:00:00:ff 10.0.0.100 ff::ff"
+check ovn-nbctl lsp-set-addresses first "${first_mac} ${first_ip} ${first_ip6}"
+check ovn-nbctl lsp-set-addresses second "${second_mac} ${second_ip} ${second_ip6}"
+check ovn-nbctl lsp-set-addresses migrator "${migrator_mac} ${migrator_ip} ${migrator_ip6}"
 
 check ovn-nbctl lsp-add ls0 public
 check ovn-nbctl lsp-set-type public localnet
@@ -15133,17 +15143,23 @@ for hv in hv1 hv2; do
 done
 
 send_ip_packet() {
-    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv4_src=$5 ipv4_dst=$6 ip_chksum=$7 data=$8 ip_len=$9
-    local ip_ttl=ff
-    local packet=${eth_dst}${eth_src}08004500${ip_len}00004000${ip_ttl}fd${ip_chksum}${ipv4_src}${ipv4_dst}${data}
+    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv4_src=$5 ipv4_dst=$6 data=$7
+    packet=$(fmt_pkt "
+        Ether(dst='${eth_dst}', src='${eth_src}') /
+        IP(src='${ipv4_src}', dst='${ipv4_dst}') /
+        ICMP(type=8) / bytes.fromhex('${data}')
+    ")
     as hv$hv ovs-appctl netdev-dummy/receive $inport $packet
     echo $packet
 }
 
 send_ip6_packet() {
-    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv6_src=$5 ipv6_dst=$6 data=$7 ip_len=$8
-    local ip_ttl=ff
-    local packet=${eth_dst}${eth_src}86dd60000000${ip_len}fd${ip_ttl}${ipv6_src}${ipv6_dst}${data}
+    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv6_src=$5 ipv6_dst=$6 data=$7
+    packet=$(fmt_pkt "
+        Ether(dst='${eth_dst}', src='${eth_src}') /
+        IPv6(src='${ipv6_src}', dst='${ipv6_dst}') /
+        ICMPv6EchoRequest() / bytes.fromhex('${data}')
+    ")
     as hv$hv ovs-appctl netdev-dummy/receive $inport $packet
     echo $packet
 }
@@ -15159,37 +15175,26 @@ reset_env() {
     done
 }
 
-first_mac=000000000001
-second_mac=000000000002
-migrator_mac=0000000000ff
-first_ip=$(ip_to_hex 10 0 0 1)
-second_ip=$(ip_to_hex 10 0 0 2)
-migrator_ip=$(ip_to_hex 10 0 0 100)
-first_ip6=ff000000000000000000000000000001
-second_ip6=ff000000000000000000000000000002
-migrator_ip6=ff0000000000000000000000000000ff
-
 OVN_POPULATE_ARP
 
 reset_env
 
 # Check that packets of proper size are delivered from multichassis to intended ports
-ip_len=058c
-len=1400
+len=1000
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip 0000 $data $ip_len)
+packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $data)
 echo $packet >> hv1/first.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip 0000 $data $ip_len)
+packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $data)
 echo $packet >> hv2/second.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $data $ip_len)
+packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $data)
 echo $packet >> hv1/first.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $data $ip_len)
+packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $data)
 echo $packet >> hv2/second.expected
 
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
@@ -15202,22 +15207,21 @@ reset_env
 # Now check that oversized packets are not delivered to the intended ports, and
 # that the originating port receives an ICMP error suggesting fragmentation
 
-ip_len=0bcc
 len=3000
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip 0000 $data $ip_len)
+packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $data)
 echo $packet >> hv1/migrator.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip 0000 $data $ip_len)
+packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $data)
 echo $packet >> hv1/migrator.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $data $ip_len)
+packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $data)
 echo $packet >> hv1/migrator.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $data $ip_len)
+packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $data)
 echo $packet >> hv1/migrator.expected
 
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
@@ -15246,25 +15250,24 @@ done
 reset_env
 
 # Check that packets of proper size are delivered from regular to multichassis ports
-ip_len=058c
-len=1400
+len=1000
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip 0000 $data $ip_len)
+packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $data)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip 0000 $data $ip_len)
+packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $data)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $data $ip_len)
+packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $data)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $data $ip_len)
+packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $data)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
@@ -15278,22 +15281,21 @@ reset_env
 # Now check that oversized packets are not delivered to multichassis ports, and
 # that the originating ports receive an ICMP error suggesting fragmentation
 
-ip_len=0bcc
 len=3000
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip 0000 $data $ip_len)
+packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $data)
 echo $packet >> hv1/first.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip 0000 $data $ip_len)
+packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $data)
 echo $packet >> hv2/second.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $data $ip_len)
+packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $data)
 echo $packet >> hv1/first.expected
 
 data=$(xxd -l $len -c $len -p < /dev/urandom)
-packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $data $ip_len)
+packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $data)
 echo $packet >> hv2/second.expected
 
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
