@@ -6274,6 +6274,7 @@ pinctrl_handle_put_icmp_frag_mtu(struct rconn *swconn,
                                  struct ofpbuf *userdata,
                                  struct ofpbuf *continuation)
 {
+    VLOG_WARN("pinctrl_handle_put_icmp_frag_mtu");
     enum ofp_version version = rconn_get_version(swconn);
     enum ofputil_protocol proto = ofputil_protocol_from_ofp_version(version);
     struct dp_packet *pkt_out = NULL;

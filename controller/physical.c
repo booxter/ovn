@@ -1155,7 +1155,7 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     match_set_metadata(&match, htonll(dp_key));
 
     /* TODO: get mtu from interface of the tunnel */
-    uint16_t frag_mtu = 1500;
+    uint16_t frag_mtu = 1400;
     struct ofpact_check_pkt_larger *pkt_larger =
         ofpact_put_CHECK_PKT_LARGER(&ofpacts);
     pkt_larger->pkt_len = frag_mtu;
@@ -1205,9 +1205,13 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     put_stack(MFF_ETH_DST, ofpact_put_STACK_POP(&inner_ofpacts));
 
     /* ip.dst */
+    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
+              ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
               ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
+              ofpact_put_STACK_POP(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
               ofpact_put_STACK_POP(&inner_ofpacts));
 
     /* ip.ttl */
@@ -1228,7 +1232,7 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
         size_t frag_mtu_oc_offset = encode_start_controller_op(
             ACTION_OPCODE_PUT_ICMP6_FRAG_MTU, true, NX_CTLR_NO_METER,
             &inner_ofpacts);
-        ovs_be32 frag_mtu_ovs = htonl(frag_mtu);
+        ovs_be32 frag_mtu_ovs = htonl(frag_mtu - 200);
         ofpbuf_put(&inner_ofpacts, &frag_mtu_ovs, sizeof(frag_mtu_ovs));
         encode_finish_controller_op(frag_mtu_oc_offset, &inner_ofpacts);
     } else {
@@ -1245,7 +1249,7 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
         size_t frag_mtu_oc_offset = encode_start_controller_op(
             ACTION_OPCODE_PUT_ICMP4_FRAG_MTU, true, NX_CTLR_NO_METER,
             &inner_ofpacts);
-        ovs_be16 frag_mtu_ovs = htons(frag_mtu);
+        ovs_be16 frag_mtu_ovs = htons(frag_mtu - 200);
         ofpbuf_put(&inner_ofpacts, &frag_mtu_ovs, sizeof(frag_mtu_ovs));
         encode_finish_controller_op(frag_mtu_oc_offset, &inner_ofpacts);
     }
@@ -1277,16 +1281,20 @@ enforce_tunneling_for_multichassis_ports(
     enum mf_field_id mff_ovn_geneve,
     struct ovn_desired_flow_table *flow_table)
 {
+    VLOG_WARN("enforce_tunneling_for_multichassis_ports 0");
     if (shash_is_empty(&ld->multichassis_ports)) {
         return;
     }
+    VLOG_WARN("enforce_tunneling_for_multichassis_ports 1");
 
     struct ovs_list *tuns = get_remote_tunnels(binding, chassis,
                                                chassis_tunnels);
     if (ovs_list_is_empty(tuns)) {
+        VLOG_WARN("enforce_tunneling_for_multichassis_ports 2");
         free(tuns);
         return;
     }
+    VLOG_WARN("enforce_tunneling_for_multichassis_ports 3");
 
     uint32_t dp_key = binding->datapath->tunnel_key;
     uint32_t port_key = binding->tunnel_key;
@@ -1321,6 +1329,7 @@ enforce_tunneling_for_multichassis_ports(
                         &binding->header_.uuid);
         ofpbuf_uninit(&ofpacts);
 
+        VLOG_WARN("enforce_tunneling_for_multichassis_ports 4 %s", binding->logical_port);
         handle_oversized_ip_packets(flow_table, binding, false);
         handle_oversized_ip_packets(flow_table, binding, true);
     }
