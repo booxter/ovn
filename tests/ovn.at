@@ -15117,10 +15117,9 @@ check ovn-nbctl lsp-set-type public localnet
 check ovn-nbctl lsp-set-addresses public unknown
 check ovn-nbctl lsp-set-options public network_name=phys
 
-# TODO: do we need mtu request here?
-check ovn-nbctl lsp-set-options first requested-chassis=hv1 vif-plug-mtu-request=1500
-check ovn-nbctl lsp-set-options second requested-chassis=hv2 vif-plug-mtu-request=1500
-check ovn-nbctl lsp-set-options migrator requested-chassis=hv1,hv2 vif-plug-mtu-request=1500
+check ovn-nbctl lsp-set-options first requested-chassis=hv1
+check ovn-nbctl lsp-set-options second requested-chassis=hv2
+check ovn-nbctl lsp-set-options migrator requested-chassis=hv1,hv2
 
 as hv1 check ovs-vsctl -- add-port br-int first -- \
     set Interface first external-ids:iface-id=first \
