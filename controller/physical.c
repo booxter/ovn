@@ -1201,8 +1201,10 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
         &inner_ofpacts, mf_from_id(MFF_LOG_FLAGS), &value, &mask);
 
     /* eth.dst */
+    put_stack(MFF_ETH_DST, ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(MFF_ETH_SRC, ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(MFF_ETH_DST, ofpact_put_STACK_POP(&inner_ofpacts));
+    put_stack(MFF_ETH_SRC, ofpact_put_STACK_POP(&inner_ofpacts));
 
     /* ip.dst */
     put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
