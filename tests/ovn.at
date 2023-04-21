@@ -15149,11 +15149,19 @@ send_ip_packet() {
         ICMP(type=8) / bytes.fromhex('${data}')
     ")
     as hv$hv ovs-appctl netdev-dummy/receive $inport $packet
-    if [[ ${fail} -eq 0 ]]; then
-      echo $packet
-    else
-      echo $packet
+    if [[ x"${fail}" != x0 ]]; then
+      original_ip_frame=$(fmt_pkt "
+        IP(src='${ipv4_src}', dst='${ipv4_dst}') /
+        ICMP(type=8) / bytes.fromhex('${data}')
+      ")
+      packet=$(fmt_pkt "
+          Ether(dst='${eth_src}', src='${eth_dst}') /
+          IP(src='${ipv4_dst}', dst='${ipv4_src}', ttl=255, flags=2, id=0) /
+          ICMP(type=3, code=4, nexthopmtu=1200) /
+          bytes.fromhex('${original_ip_frame:0:$((534 * 2))}')
+      ")
     fi
+    echo $packet
 }
 
 send_ip6_packet() {
@@ -15164,11 +15172,19 @@ send_ip6_packet() {
         ICMPv6EchoRequest() / bytes.fromhex('${data}')
     ")
     as hv$hv ovs-appctl netdev-dummy/receive $inport $packet
-    if [[ ${fail} -eq 0 ]]; then
-      echo $packet
-    else
-      echo $packet
+    if [[ x"${fail}" != x0 ]]; then
+      original_ip_frame=$(fmt_pkt "
+        IPv6(src='${ipv6_src}', dst='${ipv6_dst}') /
+        ICMPv6EchoRequest() / bytes.fromhex('${data}')
+      ")
+      packet=$(fmt_pkt "
+          Ether(dst='${eth_src}', src='${eth_dst}') /
+          IPv6(src='${ipv6_dst}', dst='${ipv6_src}', hlim=255) /
+          ICMPv6PacketTooBig(mtu=1200) /
+          bytes.fromhex('${original_ip_frame:0:$((1218 * 2))}')
+      ")
     fi
+    echo $packet
 }
 
 reset_env() {
@@ -15199,10 +15215,10 @@ echo $packet >> hv1/first.expected
 packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len) 0)
 echo $packet >> hv2/second.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len))
+packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len) 0)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len))
+packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len) 0)
 echo $packet >> hv2/second.expected
 
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
@@ -15221,37 +15237,16 @@ echo $packet >> hv1/migrator.expected
 packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len) 1)
 echo $packet >> hv1/migrator.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len))
+packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len) 1)
 echo $packet >> hv1/migrator.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len))
+packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len) 1)
 echo $packet >> hv1/migrator.expected
 
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
-
-AS_BOX([Check that the originating port receives an ICMP error suggesting fragmentation])
-
-# it's harder to construct the original packet that includes geneve headers
-# etc. so check manually
-$PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" hv1/migrator-tx.pcap > hv1/migrator.packets
-sed -i '/ffffffffffff/d' hv1/migrator.packets
-cat hv1/migrator.packets
-$PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" hv2/migrator-tx.pcap > hv2/migrator.packets
-sed -i '/ffffffffffff/d' hv2/migrator.packets
-
-# icmp errors are delivered only to the port binding that originated the offending packet
-AT_CHECK([wc -l hv1/migrator.packets | cut -c 1], [0], [4
-])
-AT_CHECK([wc -l hv2/migrator.packets | cut -c 1], [0], [0
-])
-
-for line in $(cat hv1/migrator.expected); do
-    trimmed=$(echo $line | cut -c 125-225)
-    echo "checking if packet $trimmed... generated an icmp error"
-    AT_CHECK([grep ${trimmed} hv1/migrator.packets | wc -l | cut -c 1], [0], [1
-])
-done
+OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
+OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
 
 reset_env
 
@@ -15265,11 +15260,11 @@ packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
-packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len))
+packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len) 0)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
-packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len))
+packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len) 0)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
@@ -15289,42 +15284,16 @@ echo $packet >> hv1/first.expected
 packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len) 1)
 echo $packet >> hv2/second.expected
 
-packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len))
+packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len) 1)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len))
+packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len) 1)
 echo $packet >> hv2/second.expected
 
+OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
+OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
-
-AS_BOX([Check that the originating ports receive an ICMP error suggesting fragmentation])
-
-# it's harder to construct the original packet that includes geneve headers
-# etc. so check manually
-$PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" hv1/first-tx.pcap > hv1/first.packets
-sed -i '/ffffffffffff/d' hv1/first.packets
-$PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" hv2/second-tx.pcap > hv2/second.packets
-sed -i '/ffffffffffff/d' hv2/second.packets
-
-AT_CHECK([wc -l hv1/first.packets | cut -c 1], [0], [2
-])
-AT_CHECK([wc -l hv2/second.packets | cut -c 1], [0], [2
-])
-
-for line in $(cat hv1/first.expected); do
-    trimmed=$(echo $line | cut -c 125-225)
-    echo "checking if packet $trimmed... generated an icmp error"
-    AT_CHECK([grep ${trimmed} hv1/first.packets | wc -l | cut -c 1], [0], [1
-])
-done
-
-for line in $(cat hv2/second.expected); do
-    trimmed=$(echo $line | cut -c 125-225)
-    echo "checking if packet $trimmed... generated an icmp error"
-    AT_CHECK([grep ${trimmed} hv2/second.packets | wc -l | cut -c 1], [0], [1
-])
-done
 
 # todo: test multichassis to multichassis
 
