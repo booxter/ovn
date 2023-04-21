@@ -15096,21 +15096,26 @@ done
 
 first_mac=00:00:00:00:00:01
 second_mac=00:00:00:00:00:02
-migrator_mac=00:00:00:00:00:f0
+multi1_mac=00:00:00:00:00:f0
+multi2_mac=00:00:00:00:00:f1
 first_ip=10.0.0.1
 second_ip=10.0.0.2
-migrator_ip=10.0.0.10
+multi1_ip=10.0.0.10
+multi2_ip=10.0.0.20
 first_ip6=abcd::1
 second_ip6=abcd::2
-migrator_ip6=abcd::f0
+multi1_ip6=abcd::f0
+multi2_ip6=abcd::f1
 
 check ovn-nbctl ls-add ls0 -- add Logical_Switch ls0 other_config vlan-passthru=true
 check ovn-nbctl lsp-add ls0 first
 check ovn-nbctl lsp-add ls0 second
-check ovn-nbctl lsp-add ls0 migrator
+check ovn-nbctl lsp-add ls0 multi1
+check ovn-nbctl lsp-add ls0 multi2
 check ovn-nbctl lsp-set-addresses first "${first_mac} ${first_ip} ${first_ip6}"
 check ovn-nbctl lsp-set-addresses second "${second_mac} ${second_ip} ${second_ip6}"
-check ovn-nbctl lsp-set-addresses migrator "${migrator_mac} ${migrator_ip} ${migrator_ip6}"
+check ovn-nbctl lsp-set-addresses multi1 "${multi1_mac} ${multi1_ip} ${multi1_ip6}"
+check ovn-nbctl lsp-set-addresses multi2 "${multi2_mac} ${multi2_ip} ${multi2_ip6}"
 
 check ovn-nbctl lsp-add ls0 public
 check ovn-nbctl lsp-set-type public localnet
@@ -15119,7 +15124,8 @@ check ovn-nbctl lsp-set-options public network_name=phys
 
 check ovn-nbctl lsp-set-options first requested-chassis=hv1
 check ovn-nbctl lsp-set-options second requested-chassis=hv2
-check ovn-nbctl lsp-set-options migrator requested-chassis=hv1,hv2
+check ovn-nbctl lsp-set-options multi1 requested-chassis=hv1,hv2
+check ovn-nbctl lsp-set-options multi2 requested-chassis=hv1,hv2
 
 as hv1 check ovs-vsctl -- add-port br-int first -- \
     set Interface first external-ids:iface-id=first \
@@ -15134,11 +15140,13 @@ as hv2 check ovs-vsctl -- add-port br-int second -- \
 
 # Create Migrator interfaces on both hv1 and hv2
 for hv in hv1 hv2; do
-    as $hv check ovs-vsctl -- add-port br-int migrator -- \
-        set Interface migrator external-ids:iface-id=migrator \
-        options:tx_pcap=$hv/migrator-tx.pcap \
-        options:rxq_pcap=$hv/migrator-rx.pcap \
-        ofport-request=100
+    for i in 1 2; do
+        as $hv check ovs-vsctl -- add-port br-int multi${i} -- \
+            set Interface multi${i} external-ids:iface-id=multi${i} \
+            options:tx_pcap=$hv/multi${i}-tx.pcap \
+            options:rxq_pcap=$hv/multi${i}-rx.pcap \
+            ofport-request=${i}00
+    done
 done
 
 send_ip_packet() {
@@ -15190,16 +15198,18 @@ send_ip6_packet() {
 reset_env() {
     as hv1 reset_pcap_file first hv1/first
     as hv2 reset_pcap_file second hv2/second
-    as hv1 reset_pcap_file migrator hv1/migrator
-    as hv2 reset_pcap_file migrator hv2/migrator
+    as hv1 reset_pcap_file multi1 hv1/multi1
+    as hv2 reset_pcap_file multi1 hv2/multi1
+    as hv1 reset_pcap_file multi2 hv1/multi2
+    as hv2 reset_pcap_file multi2 hv2/multi2
 
-    for port in hv1/migrator hv2/migrator hv1/first hv2/second; do
+    for port in hv1/multi1 hv2/multi1 hv1/multi2 hv2/multi2 hv1/first hv2/second; do
         : > $port.expected
     done
 }
 
 check_pkts() {
-    for port in hv1/migrator hv2/migrator hv1/first hv2/second; do
+    for port in hv1/multi1 hv2/multi1 hv1/multi2 hv2/multi2 hv1/first hv2/second; do
         OVN_CHECK_PACKETS_REMOVE_BROADCAST([${port}-tx.pcap], [${port}.expected])
     done
 }
@@ -15212,82 +15222,106 @@ OVN_POPULATE_ARP
 
 reset_env
 
-AS_BOX([Check that packets of proper size are delivered from multichassis to intended ports])
+AS_BOX([Packets of proper size are delivered from multichassis to intended ports])
 
 len=1000
-packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $(payload $len) 0)
+packet=$(send_ip_packet multi1 1 $multi1_mac $first_mac $multi1_ip $first_ip $(payload $len) 0)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len) 0)
+packet=$(send_ip_packet multi1 1 $multi1_mac $second_mac $multi1_ip $second_ip $(payload $len) 0)
 echo $packet >> hv2/second.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len) 0)
+packet=$(send_ip6_packet multi1 1 $multi1_mac $first_mac $multi1_ip6 $first_ip6 $(payload $len) 0)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len) 0)
+packet=$(send_ip6_packet multi1 1 $multi1_mac $second_mac $multi1_ip6 $second_ip6 $(payload $len) 0)
 echo $packet >> hv2/second.expected
 
 check_pkts
 reset_env
 
-AS_BOX([Check that oversized packets are not delivered to the intended ports])
+AS_BOX([Oversized packets are not delivered to the intended ports])
 
 len=3000
-packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $(payload $len) 1)
-echo $packet >> hv1/migrator.expected
+packet=$(send_ip_packet multi1 1 $multi1_mac $first_mac $multi1_ip $first_ip $(payload $len) 1)
+echo $packet >> hv1/multi1.expected
 
-packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len) 1)
-echo $packet >> hv1/migrator.expected
+packet=$(send_ip_packet multi1 1 $multi1_mac $second_mac $multi1_ip $second_ip $(payload $len) 1)
+echo $packet >> hv1/multi1.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len) 1)
-echo $packet >> hv1/migrator.expected
+packet=$(send_ip6_packet multi1 1 $multi1_mac $first_mac $multi1_ip6 $first_ip6 $(payload $len) 1)
+echo $packet >> hv1/multi1.expected
 
-packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len) 1)
-echo $packet >> hv1/migrator.expected
+packet=$(send_ip6_packet multi1 1 $multi1_mac $second_mac $multi1_ip6 $second_ip6 $(payload $len) 1)
+echo $packet >> hv1/multi1.expected
 
 check_pkts
 reset_env
 
-AS_BOX([Check that packets of proper size are delivered from regular to multichassis ports])
+AS_BOX([Packets of proper size are delivered from regular to multichassis ports])
 
 len=1000
-packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len) 0)
-echo $packet >> hv1/migrator.expected
-echo $packet >> hv2/migrator.expected
+packet=$(send_ip_packet first 1 $first_mac $multi1_mac $first_ip $multi1_ip $(payload $len) 0)
+echo $packet >> hv1/multi1.expected
+echo $packet >> hv2/multi1.expected
 
-packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len) 0)
-echo $packet >> hv1/migrator.expected
-echo $packet >> hv2/migrator.expected
+packet=$(send_ip_packet second 2 $second_mac $multi1_mac $second_ip $multi1_ip $(payload $len) 0)
+echo $packet >> hv1/multi1.expected
+echo $packet >> hv2/multi1.expected
 
-packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len) 0)
-echo $packet >> hv1/migrator.expected
-echo $packet >> hv2/migrator.expected
+packet=$(send_ip6_packet first 1 $first_mac $multi1_mac $first_ip6 $multi1_ip6 $(payload $len) 0)
+echo $packet >> hv1/multi1.expected
+echo $packet >> hv2/multi1.expected
 
-packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len) 0)
-echo $packet >> hv1/migrator.expected
-echo $packet >> hv2/migrator.expected
+packet=$(send_ip6_packet second 2 $second_mac $multi1_mac $second_ip6 $multi1_ip6 $(payload $len) 0)
+echo $packet >> hv1/multi1.expected
+echo $packet >> hv2/multi1.expected
 
 check_pkts
 reset_env
 
-AS_BOX([Check that oversized packets are not delivered to multichassis ports])
+AS_BOX([Oversized packets are not delivered to multichassis ports])
 
 len=3000
-packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len) 1)
+packet=$(send_ip_packet first 1 $first_mac $multi1_mac $first_ip $multi1_ip $(payload $len) 1)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len) 1)
+packet=$(send_ip_packet second 2 $second_mac $multi1_mac $second_ip $multi1_ip $(payload $len) 1)
 echo $packet >> hv2/second.expected
 
-packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len) 1)
+packet=$(send_ip6_packet first 1 $first_mac $multi1_mac $first_ip6 $multi1_ip6 $(payload $len) 1)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len) 1)
+packet=$(send_ip6_packet second 2 $second_mac $multi1_mac $second_ip6 $multi1_ip6 $(payload $len) 1)
 echo $packet >> hv2/second.expected
 
 check_pkts
+reset_env
 
-# todo: test multichassis to multichassis
+AS_BOX([Packets of proper size are delivered from multichassis to multichassis ports])
+
+len=1000
+packet=$(send_ip_packet multi1 1 $multi1_mac $multi2_mac $multi1_ip $multi2_ip $(payload $len) 0)
+echo $packet >> hv1/multi2.expected
+echo $packet >> hv2/multi2.expected
+
+packet=$(send_ip6_packet multi1 1 $multi1_mac $multi2_mac $multi1_ip6 $multi2_ip6 $(payload $len) 0)
+echo $packet >> hv1/multi2.expected
+echo $packet >> hv2/multi2.expected
+
+check_pkts
+reset_env
+
+AS_BOX([Oversized packets are not delivered from multichassis to multichassis ports])
+
+len=3000
+packet=$(send_ip_packet multi1 1 $multi1_mac $multi2_mac $multi1_ip $multi2_ip $(payload $len) 1)
+echo $packet >> hv1/multi1.expected
+
+packet=$(send_ip6_packet multi1 1 $multi1_mac $multi2_mac $multi1_ip6 $multi2_ip6 $(payload $len) 1)
+echo $packet >> hv1/multi1.expected
+
+check_pkts
 
 OVN_CLEANUP([hv1],[hv2])
 
