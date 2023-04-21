@@ -15157,14 +15157,18 @@ send_ip_packet() {
 }
 
 send_ip6_packet() {
-    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv6_src=$5 ipv6_dst=$6 data=$7
+    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv6_src=$5 ipv6_dst=$6 data=$7 fail=$8
     packet=$(fmt_pkt "
         Ether(dst='${eth_dst}', src='${eth_src}') /
         IPv6(src='${ipv6_src}', dst='${ipv6_dst}') /
         ICMPv6EchoRequest() / bytes.fromhex('${data}')
     ")
     as hv$hv ovs-appctl netdev-dummy/receive $inport $packet
-    echo $packet
+    if [[ ${fail} -eq 0 ]]; then
+      echo $packet
+    else
+      echo $packet
+    fi
 }
 
 reset_env() {
