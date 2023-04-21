@@ -15142,14 +15142,18 @@ for hv in hv1 hv2; do
 done
 
 send_ip_packet() {
-    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv4_src=$5 ipv4_dst=$6 data=$7
+    local inport=$1 hv=$2 eth_src=$3 eth_dst=$4 ipv4_src=$5 ipv4_dst=$6 data=$7 fail=$8
     packet=$(fmt_pkt "
         Ether(dst='${eth_dst}', src='${eth_src}') /
         IP(src='${ipv4_src}', dst='${ipv4_dst}') /
         ICMP(type=8) / bytes.fromhex('${data}')
     ")
     as hv$hv ovs-appctl netdev-dummy/receive $inport $packet
-    echo $packet
+    if [[ ${fail} -eq 0 ]]; then
+      echo $packet
+    else
+      echo $packet
+    fi
 }
 
 send_ip6_packet() {
@@ -15182,12 +15186,13 @@ OVN_POPULATE_ARP
 
 reset_env
 
-# Check that packets of proper size are delivered from multichassis to intended ports
+AS_BOX([Check that packets of proper size are delivered from multichassis to intended ports])
+
 len=1000
-packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $(payload $len))
+packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $(payload $len) 0)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len))
+packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len) 0)
 echo $packet >> hv2/second.expected
 
 packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len))
@@ -15203,14 +15208,13 @@ OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expecte
 
 reset_env
 
-# Now check that oversized packets are not delivered to the intended ports, and
-# that the originating port receives an ICMP error suggesting fragmentation
+AS_BOX([Check that oversized packets are not delivered to the intended ports])
 
 len=3000
-packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $(payload $len))
+packet=$(send_ip_packet migrator 1 $migrator_mac $first_mac $migrator_ip $first_ip $(payload $len) 1)
 echo $packet >> hv1/migrator.expected
 
-packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len))
+packet=$(send_ip_packet migrator 1 $migrator_mac $second_mac $migrator_ip $second_ip $(payload $len) 1)
 echo $packet >> hv1/migrator.expected
 
 packet=$(send_ip6_packet migrator 1 $migrator_mac $first_mac $migrator_ip6 $first_ip6 $(payload $len))
@@ -15222,10 +15226,13 @@ echo $packet >> hv1/migrator.expected
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
 
+AS_BOX([Check that the originating port receives an ICMP error suggesting fragmentation])
+
 # it's harder to construct the original packet that includes geneve headers
 # etc. so check manually
 $PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" hv1/migrator-tx.pcap > hv1/migrator.packets
 sed -i '/ffffffffffff/d' hv1/migrator.packets
+cat hv1/migrator.packets
 $PYTHON "$ovs_srcdir/utilities/ovs-pcap.in" hv2/migrator-tx.pcap > hv2/migrator.packets
 sed -i '/ffffffffffff/d' hv2/migrator.packets
 
@@ -15244,13 +15251,13 @@ done
 
 reset_env
 
-# Check that packets of proper size are delivered from regular to multichassis ports
+AS_BOX([Check that packets of proper size are delivered from regular to multichassis ports])
 len=1000
-packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len))
+packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len) 0)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
-packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len))
+packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len) 0)
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
@@ -15269,14 +15276,13 @@ OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expecte
 
 reset_env
 
-# Now check that oversized packets are not delivered to multichassis ports, and
-# that the originating ports receive an ICMP error suggesting fragmentation
+AS_BOX([Check that oversized packets are not delivered to multichassis ports])
 
 len=3000
-packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len))
+packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len) 1)
 echo $packet >> hv1/first.expected
 
-packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len))
+packet=$(send_ip_packet second 2 $second_mac $migrator_mac $second_ip $migrator_ip $(payload $len) 1)
 echo $packet >> hv2/second.expected
 
 packet=$(send_ip6_packet first 1 $first_mac $migrator_mac $first_ip6 $migrator_ip6 $(payload $len))
@@ -15287,6 +15293,8 @@ echo $packet >> hv2/second.expected
 
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
 OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
+
+AS_BOX([Check that the originating ports receive an ICMP error suggesting fragmentation])
 
 # it's harder to construct the original packet that includes geneve headers
 # etc. so check manually
