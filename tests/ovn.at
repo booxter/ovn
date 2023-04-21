@@ -15198,6 +15198,12 @@ reset_env() {
     done
 }
 
+check_pkts() {
+    for port in hv1/migrator hv2/migrator hv1/first hv2/second; do
+        OVN_CHECK_PACKETS_REMOVE_BROADCAST([${port}-tx.pcap], [${port}.expected])
+    done
+}
+
 payload() {
     echo $(xxd -l $1 -c $1 -p < /dev/urandom)
 }
@@ -15221,11 +15227,7 @@ echo $packet >> hv1/first.expected
 packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len) 0)
 echo $packet >> hv2/second.expected
 
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
-
+check_pkts
 reset_env
 
 AS_BOX([Check that oversized packets are not delivered to the intended ports])
@@ -15243,14 +15245,11 @@ echo $packet >> hv1/migrator.expected
 packet=$(send_ip6_packet migrator 1 $migrator_mac $second_mac $migrator_ip6 $second_ip6 $(payload $len) 1)
 echo $packet >> hv1/migrator.expected
 
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
-
+check_pkts
 reset_env
 
 AS_BOX([Check that packets of proper size are delivered from regular to multichassis ports])
+
 len=1000
 packet=$(send_ip_packet first 1 $first_mac $migrator_mac $first_ip $migrator_ip $(payload $len) 0)
 echo $packet >> hv1/migrator.expected
@@ -15268,11 +15267,7 @@ packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrato
 echo $packet >> hv1/migrator.expected
 echo $packet >> hv2/migrator.expected
 
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
-
+check_pkts
 reset_env
 
 AS_BOX([Check that oversized packets are not delivered to multichassis ports])
@@ -15290,10 +15285,7 @@ echo $packet >> hv1/first.expected
 packet=$(send_ip6_packet second 2 $second_mac $migrator_mac $second_ip6 $migrator_ip6 $(payload $len) 1)
 echo $packet >> hv2/second.expected
 
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/first-tx.pcap], [hv1/first.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/second-tx.pcap], [hv2/second.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv1/migrator-tx.pcap], [hv1/migrator.expected])
-OVN_CHECK_PACKETS_REMOVE_BROADCAST([hv2/migrator-tx.pcap], [hv2/migrator.expected])
+check_pkts
 
 # todo: test multichassis to multichassis
 
