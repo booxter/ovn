@@ -1134,12 +1134,15 @@ encode_finish_controller_op(size_t ofs, struct ofpbuf *ofpacts)
     ofpact_finish_CONTROLLER(ofpacts, &oc);
 }
 
+/*
+ * Insert a flow to determine if an IP packet is too big for the corresponding
+ * egress interface.
+ */
 static void
-set_reg9_for_direction(struct ovn_desired_flow_table *flow_table,
-                       const struct sbrec_port_binding *binding,
-                       const struct sbrec_port_binding *mcp OVS_UNUSED,
-                       bool is_ipv6,
-                       int direction OVS_UNUSED)
+determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
+                         const struct sbrec_port_binding *binding,
+                         const struct sbrec_port_binding *mcp,
+                         bool is_ipv6, int direction)
 {
     struct ofpbuf ofpacts;
     ofpbuf_init(&ofpacts, 0);
@@ -1166,17 +1169,15 @@ set_reg9_for_direction(struct ovn_desired_flow_table *flow_table,
     ofpbuf_uninit(&ofpacts);
 }
 
+/*
+ * Insert a flow to reply with ICMP error for IP packets that are too big for
+ * the corresponding egress interface.
+ */
 static void
-handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
-                            const struct sbrec_port_binding *binding,
-                            const struct sbrec_port_binding *mcp,
-                            bool is_ipv6)
+reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
+                                const struct sbrec_port_binding *binding,
+                                bool is_ipv6)
 {
-    set_reg9_for_direction(flow_table, binding, mcp, is_ipv6, MFF_LOG_INPORT);
-    set_reg9_for_direction(flow_table, binding, mcp, is_ipv6, MFF_LOG_OUTPORT);
-
-    /* Generate ICMP Fragmentation needed for IP packets that are too large
-     * (reg9[1] == 1) */
     struct match match;
     match_init_catchall(&match);
     match_set_dl_type(&match, htons(is_ipv6 ? ETH_TYPE_IPV6 : ETH_TYPE_IP));
@@ -1188,8 +1189,6 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     size_t oc_offset = encode_start_controller_op(
         ACTION_OPCODE_ICMP, true, NX_CTLR_NO_METER, &ofpacts);
 
-    /* Before sending the ICMP error packet back to the pipeline, set a number
-     * of fields. */
     struct ofpbuf inner_ofpacts;
     ofpbuf_init(&inner_ofpacts, 0);
 
@@ -1207,19 +1206,24 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     ofpact_put_set_field(
         &inner_ofpacts, mf_from_id(MFF_LOG_FLAGS), &value, &mask);
 
-    /* eth.dst */
+    /* eth.src <-> eth.dst */
     put_stack(MFF_ETH_DST, ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(MFF_ETH_SRC, ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(MFF_ETH_DST, ofpact_put_STACK_POP(&inner_ofpacts));
     put_stack(MFF_ETH_SRC, ofpact_put_STACK_POP(&inner_ofpacts));
 
-    /* ip.dst */
-    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST, ofpact_put_STACK_PUSH(&inner_ofpacts));
-    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC, ofpact_put_STACK_PUSH(&inner_ofpacts));
-    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST, ofpact_put_STACK_POP(&inner_ofpacts));
-    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC, ofpact_put_STACK_POP(&inner_ofpacts));
+    /* ip.src <-> ip.dst */
+    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
+        ofpact_put_STACK_PUSH(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
+        ofpact_put_STACK_PUSH(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
+        ofpact_put_STACK_POP(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
+        ofpact_put_STACK_POP(&inner_ofpacts));
 
     /* ip.ttl */
+    // TODO(ihar): check if this is needed
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
@@ -1287,20 +1291,16 @@ enforce_tunneling_for_multichassis_ports(
     enum mf_field_id mff_ovn_geneve,
     struct ovn_desired_flow_table *flow_table)
 {
-    VLOG_WARN("enforce_tunneling_for_multichassis_ports 0");
     if (shash_is_empty(&ld->multichassis_ports)) {
         return;
     }
-    VLOG_WARN("enforce_tunneling_for_multichassis_ports 1");
 
     struct ovs_list *tuns = get_remote_tunnels(binding, chassis,
                                                chassis_tunnels);
     if (ovs_list_is_empty(tuns)) {
-        VLOG_WARN("enforce_tunneling_for_multichassis_ports 2");
         free(tuns);
         return;
     }
-    VLOG_WARN("enforce_tunneling_for_multichassis_ports 3");
 
     uint32_t dp_key = binding->datapath->tunnel_key;
     uint32_t port_key = binding->tunnel_key;
@@ -1335,9 +1335,16 @@ enforce_tunneling_for_multichassis_ports(
                         &binding->header_.uuid);
         ofpbuf_uninit(&ofpacts);
 
-        VLOG_WARN("enforce_tunneling_for_multichassis_ports 4 %s", binding->logical_port);
-        handle_oversized_ip_packets(flow_table, binding, mcp, false);
-        handle_oversized_ip_packets(flow_table, binding, mcp, true);
+        // TODO(ihar): dedup
+        bool is_ipv6 = false;
+        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_INPORT);
+        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_OUTPORT);
+        reply_imcp_error_if_pkt_too_big(flow_table, binding, is_ipv6);
+
+        is_ipv6 = true;
+        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_INPORT);
+        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_OUTPORT);
+        reply_imcp_error_if_pkt_too_big(flow_table, binding, is_ipv6);
     }
 
     struct tunnel *tun_elem;
@@ -1743,7 +1750,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
             }
         }
 
-	// TODO(ihrachys): update numbers here and in docs and in all other places
+        // TODO(ihrachys): update numbers here and in docs and in all other places
         /* Table 37, priority 150.
          * =======================
          *
