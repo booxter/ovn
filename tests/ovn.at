@@ -15162,6 +15162,8 @@ send_ip_packet() {
         IP(src='${ipv4_src}', dst='${ipv4_dst}') /
         ICMP(type=8) / bytes.fromhex('${data}')
       ")
+      # IP(flags=2) means DF (Don't Fragment) = 1
+      # ICMP(type=3, code=4) means Destination Unreachable, Fragmentation Needed
       packet=$(fmt_pkt "
           Ether(dst='${eth_src}', src='${eth_dst}') /
           IP(src='${ipv4_dst}', dst='${ipv4_src}', ttl=255, flags=2, id=0) /
@@ -15196,19 +15198,19 @@ send_ip6_packet() {
 }
 
 reset_env() {
-    as hv1 reset_pcap_file first hv1/first
-    as hv2 reset_pcap_file second hv2/second
-    as hv1 reset_pcap_file multi1 hv1/multi1
-    as hv2 reset_pcap_file multi1 hv2/multi1
-    as hv1 reset_pcap_file multi2 hv1/multi2
-    as hv2 reset_pcap_file multi2 hv2/multi2
-
+    for port in first multi1 multi2; do
+        as hv1 reset_pcap_file $port hv1/$port
+    done
+    for port in second multi1 multi2; do
+        as hv2 reset_pcap_file $port hv2/$port
+    done
     for port in hv1/multi1 hv2/multi1 hv1/multi2 hv2/multi2 hv1/first hv2/second; do
         : > $port.expected
     done
 }
 
 check_pkts() {
+    as hv1 ovs-ofctl dump-flows br-int
     for port in hv1/multi1 hv2/multi1 hv1/multi2 hv2/multi2 hv1/first hv2/second; do
         OVN_CHECK_PACKETS_REMOVE_BROADCAST([${port}-tx.pcap], [${port}.expected])
     done
@@ -15222,7 +15224,7 @@ OVN_POPULATE_ARP
 
 reset_env
 
-AS_BOX([Packets of proper size are delivered from multichassis to intended ports])
+AS_BOX([Packets of proper size are delivered from multichassis to regular ports])
 
 len=1000
 packet=$(send_ip_packet multi1 1 $multi1_mac $first_mac $multi1_ip $first_ip $(payload $len) 0)
@@ -15240,7 +15242,7 @@ echo $packet >> hv2/second.expected
 check_pkts
 reset_env
 
-AS_BOX([Oversized packets are not delivered to the intended ports])
+AS_BOX([Oversized packets are not delivered from multichassis to regular ports])
 
 len=3000
 packet=$(send_ip_packet multi1 1 $multi1_mac $first_mac $multi1_ip $first_ip $(payload $len) 1)
@@ -15280,7 +15282,7 @@ echo $packet >> hv2/multi1.expected
 check_pkts
 reset_env
 
-AS_BOX([Oversized packets are not delivered to multichassis ports])
+AS_BOX([Oversized packets are not delivered from regular to multichassis ports])
 
 len=3000
 packet=$(send_ip_packet first 1 $first_mac $multi1_mac $first_ip $multi1_ip $(payload $len) 1)

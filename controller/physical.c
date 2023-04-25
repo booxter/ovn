@@ -1135,24 +1135,21 @@ encode_finish_controller_op(size_t ofs, struct ofpbuf *ofpacts)
 }
 
 static void
-handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
-                            const struct sbrec_port_binding *binding,
-                            bool is_ipv6)
+set_reg9_for_direction(struct ovn_desired_flow_table *flow_table,
+                       const struct sbrec_port_binding *binding,
+                       const struct sbrec_port_binding *mcp OVS_UNUSED,
+                       bool is_ipv6,
+                       int direction OVS_UNUSED)
 {
-    uint32_t dp_key = binding->datapath->tunnel_key;
-
-    struct match match;
-    match_init_catchall(&match);
-    match_set_metadata(&match, htonll(dp_key));
-
     struct ofpbuf ofpacts;
     ofpbuf_init(&ofpacts, 0);
 
     /* Store packet too large flag in reg9[1]. */
-    /* TODO: limit to multichassis traffic? */
+    struct match match;
     match_init_catchall(&match);
     match_set_dl_type(&match, htons(is_ipv6 ? ETH_TYPE_IPV6 : ETH_TYPE_IP));
-    match_set_metadata(&match, htonll(dp_key));
+    match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
+    match_set_reg(&match, direction - MFF_REG0, mcp->tunnel_key);
 
     /* TODO: get mtu from interface of the tunnel */
     uint16_t frag_mtu = 1400;
@@ -1162,21 +1159,31 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     pkt_larger->dst.field = mf_from_id(MFF_REG9);
     pkt_larger->dst.ofs = 1;
 
-    put_resubmit(31, &ofpacts);
-    /* TODO: should we tag table=30 as consumed for this job anywhere? */
-    ofctrl_add_flow(flow_table, 30, 110,
+    put_resubmit(OFTABLE_OUTPUT_LARGE_PKT_PROCESS, &ofpacts);
+    ofctrl_add_flow(flow_table, OFTABLE_OUTPUT_LARGE_PKT_DETECT, 10000,
                     binding->header_.uuid.parts[0], &match, &ofpacts,
                     &binding->header_.uuid);
     ofpbuf_uninit(&ofpacts);
+}
+
+static void
+handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
+                            const struct sbrec_port_binding *binding,
+                            const struct sbrec_port_binding *mcp,
+                            bool is_ipv6)
+{
+    set_reg9_for_direction(flow_table, binding, mcp, is_ipv6, MFF_LOG_INPORT);
+    set_reg9_for_direction(flow_table, binding, mcp, is_ipv6, MFF_LOG_OUTPORT);
 
     /* Generate ICMP Fragmentation needed for IP packets that are too large
      * (reg9[1] == 1) */
-    /* TODO: limit to multichassis traffic? */
+    struct match match;
     match_init_catchall(&match);
     match_set_dl_type(&match, htons(is_ipv6 ? ETH_TYPE_IPV6 : ETH_TYPE_IP));
     match_set_reg_masked(&match, MFF_REG9 - MFF_REG0, 1 << 1, 1 << 1);
 
     /* Return ICMP error with a part of the original IP packet included. */
+    struct ofpbuf ofpacts;
     ofpbuf_init(&ofpacts, 0);
     size_t oc_offset = encode_start_controller_op(
         ACTION_OPCODE_ICMP, true, NX_CTLR_NO_METER, &ofpacts);
@@ -1207,19 +1214,16 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     put_stack(MFF_ETH_SRC, ofpact_put_STACK_POP(&inner_ofpacts));
 
     /* ip.dst */
-    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
-              ofpact_put_STACK_PUSH(&inner_ofpacts));
-    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
-              ofpact_put_STACK_PUSH(&inner_ofpacts));
-    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST,
-              ofpact_put_STACK_POP(&inner_ofpacts));
-    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
-              ofpact_put_STACK_POP(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST, ofpact_put_STACK_PUSH(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC, ofpact_put_STACK_PUSH(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_DST : MFF_IPV4_DST, ofpact_put_STACK_POP(&inner_ofpacts));
+    put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC, ofpact_put_STACK_POP(&inner_ofpacts));
 
     /* ip.ttl */
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
+    uint16_t frag_mtu = 1400; // TODO: dedup
     if (is_ipv6) {
         /* icmp6.type = 2 (Packet Too Big) */
         /* icmp6.code = 0 */
@@ -1257,7 +1261,7 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     }
 
     /* Finally, submit the ICMP error back to the ingress pipeline */
-    put_resubmit(8, &inner_ofpacts);
+    put_resubmit(OFTABLE_LOG_INGRESS_PIPELINE, &inner_ofpacts);
 
     /* Attach nested actions to ICMP error controller handler */
     ofpacts_put_openflow_actions(inner_ofpacts.data, inner_ofpacts.size,
@@ -1266,7 +1270,7 @@ handle_oversized_ip_packets(struct ovn_desired_flow_table *flow_table,
     /* Finalize the ICMP error controller handler */
     encode_finish_controller_op(oc_offset, &ofpacts);
 
-    ofctrl_add_flow(flow_table, OFTABLE_REMOTE_OUTPUT, 1000,
+    ofctrl_add_flow(flow_table, OFTABLE_OUTPUT_LARGE_PKT_PROCESS, 1000,
                     binding->header_.uuid.parts[0], &match, &ofpacts,
                     &binding->header_.uuid);
 
@@ -1332,8 +1336,8 @@ enforce_tunneling_for_multichassis_ports(
         ofpbuf_uninit(&ofpacts);
 
         VLOG_WARN("enforce_tunneling_for_multichassis_ports 4 %s", binding->logical_port);
-        handle_oversized_ip_packets(flow_table, binding, false);
-        handle_oversized_ip_packets(flow_table, binding, true);
+        handle_oversized_ip_packets(flow_table, binding, mcp, false);
+        handle_oversized_ip_packets(flow_table, binding, mcp, true);
     }
 
     struct tunnel *tun_elem;
@@ -1739,6 +1743,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
             }
         }
 
+	// TODO(ihrachys): update numbers here and in docs and in all other places
         /* Table 37, priority 150.
          * =======================
          *
@@ -2336,6 +2341,30 @@ physical_run(struct physical_ctx *p_ctx,
      */
     add_default_drop_flow(p_ctx, OFTABLE_PHY_TO_LOG, flow_table);
 
+    /* Table 34-36, priority 0.
+     * ========================
+     *
+     * Default resubmit actions for OFTABLE_OUTPUT_LARGE_PKT_* tables.
+     */
+    struct match match;
+    match_init_catchall(&match);
+    ofpbuf_clear(&ofpacts);
+    put_resubmit(OFTABLE_OUTPUT_LARGE_PKT_DETECT, &ofpacts);
+    ofctrl_add_flow(flow_table, OFTABLE_OUTPUT_INIT, 0, 0, &match,
+                    &ofpacts, hc_uuid);
+
+    match_init_catchall(&match);
+    ofpbuf_clear(&ofpacts);
+    put_resubmit(OFTABLE_REMOTE_OUTPUT, &ofpacts);
+    ofctrl_add_flow(flow_table, OFTABLE_OUTPUT_LARGE_PKT_DETECT, 0, 0, &match,
+                    &ofpacts, hc_uuid);
+
+    match_init_catchall(&match);
+    ofpbuf_clear(&ofpacts);
+    put_resubmit(OFTABLE_REMOTE_OUTPUT, &ofpacts);
+    ofctrl_add_flow(flow_table, OFTABLE_OUTPUT_LARGE_PKT_PROCESS, 0, 0, &match,
+                    &ofpacts, hc_uuid);
+
     /* Table 37, priority 150.
      * =======================
      *
@@ -2345,7 +2374,6 @@ physical_run(struct physical_ctx *p_ctx,
      * for local delivery, except packets which have MLF_ALLOW_LOOPBACK bit
      * set.
      */
-    struct match match;
     match_init_catchall(&match);
     match_set_reg_masked(&match, MFF_LOG_FLAGS - MFF_REG0, MLF_RCV_FROM_RAMP,
                          MLF_RCV_FROM_RAMP | MLF_ALLOW_LOOPBACK);
