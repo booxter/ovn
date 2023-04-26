@@ -1316,8 +1316,7 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     // extract its official mtu
     uint16_t iface_mtu = (uint16_t) iface->mtu[0];
 
-    // iterate over tunnels
-    // find the "largest" tunnel overhead
+    // iterate over all peer tunnels and find the biggest tunnel overhead
     uint16_t overhead = 0;
     struct tunnel *tun;
     LIST_FOR_EACH (tun, list_node, remote_tunnels) {
@@ -1330,7 +1329,7 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
         return 0;
     }
 
-    // substract the overlead from official mtu
+    // substract the overhead from official mtu
     return iface_mtu - overhead;
 }
 
@@ -1813,7 +1812,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
             }
         }
 
-        // TODO(ihrachys): update numbers here and in docs and in all other places
+        // TODO(ihrachys): update numbers in docs and all other places
         /* Table 40, priority 150.
          * =======================
          *
