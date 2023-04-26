@@ -15223,6 +15223,8 @@ payload() {
 OVN_POPULATE_ARP
 
 as main ovn-sbctl list Port_Binding
+as hv1 ovs-vsctl list Port
+as hv1 ovs-vsctl list Interface
 
 reset_env
 

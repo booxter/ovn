@@ -91,6 +91,7 @@ physical_register_ovs_idl(struct ovsdb_idl *ovs_idl)
 
     ovsdb_idl_add_table(ovs_idl, &ovsrec_table_interface);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_name);
+    ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_mtu);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_ofport);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_external_ids);
 }
@@ -1282,17 +1283,55 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     ofpbuf_uninit(&ofpacts);
 }
 
-// TODO: remove UNUSED
 static uint16_t
-get_effective_mtu(const struct sbrec_port_binding *mcp OVS_UNUSED,
-                  struct ovs_list *remote_tunnels OVS_UNUSED)
+get_tunnel_overhead(enum chassis_tunnel_type type OVS_UNUSED)
+{
+    return 100;
+}
+
+static uint16_t
+get_effective_mtu(const struct sbrec_port_binding *mcp,
+                  struct ovs_list *remote_tunnels,
+                  const struct ovsrec_bridge *br_int)
 {
     // find interface for mcp
+    // TODO: use if_status_mgr - will need to first collect mtus there
+    // TODO: should we extract mtu from localnet port instead? (is it a thing?)
+    const struct ovsrec_interface *iface = NULL;
+    for (size_t i = 0; i < br_int->n_ports; i++) {
+        const struct ovsrec_port *port = br_int->ports[i];
+        if (strcmp(port->name, mcp->logical_port)) {
+            continue;
+        }
+        if (!port->n_interfaces) {
+            return 0;
+        }
+        iface = port->interfaces[0];
+        break;
+    }
+    if (!iface || !iface->n_mtu || iface->mtu[0] <= 0) {
+        return 0;
+    }
+
     // extract its official mtu
+    uint16_t iface_mtu = (uint16_t) iface->mtu[0];
+
     // iterate over tunnels
     // find the "largest" tunnel overhead
+    uint16_t overhead = 0;
+    struct tunnel *tun;
+    LIST_FOR_EACH (tun, list_node, remote_tunnels) {
+        uint16_t tunnel_overhead = get_tunnel_overhead(tun->tun->type);
+        if (tunnel_overhead > overhead) {
+            overhead = tunnel_overhead;
+        }
+    }
+    if (!overhead) {
+        return 0;
+    }
+
     // substract the overlead from official mtu
-    return 1400;
+    return iface_mtu - overhead;
 }
 
 static void
@@ -1301,6 +1340,7 @@ enforce_tunneling_for_multichassis_ports(
     const struct sbrec_port_binding *binding,
     const struct sbrec_chassis *chassis,
     const struct hmap *chassis_tunnels,
+    const struct ovsrec_bridge *br_int,
     enum mf_field_id mff_ovn_geneve,
     struct ovn_desired_flow_table *flow_table)
 {
@@ -1348,7 +1388,8 @@ enforce_tunneling_for_multichassis_ports(
                         &binding->header_.uuid);
         ofpbuf_uninit(&ofpacts);
 
-        uint16_t max_mtu = get_effective_mtu(mcp, tuns);
+        // TODO: optimize? build a dict of name to interface lazily?
+        uint16_t max_mtu = get_effective_mtu(mcp, tuns, br_int);
         if (!max_mtu) {
             continue;
         }
@@ -1387,6 +1428,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                       const struct sbrec_port_binding *binding,
                       const struct sbrec_chassis *chassis,
                       const struct physical_debug *debug,
+                      const struct ovsrec_bridge *br_int,
                       struct ovn_desired_flow_table *flow_table,
                       struct ofpbuf *ofpacts_p)
 {
@@ -1814,7 +1856,8 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                         &match, ofpacts_p, &binding->header_.uuid);
 
         enforce_tunneling_for_multichassis_ports(
-            ld, binding, chassis, chassis_tunnels, mff_ovn_geneve, flow_table);
+            ld, binding, chassis, chassis_tunnels, br_int,
+            mff_ovn_geneve, flow_table);
 
         /* No more tunneling to set up. */
         goto out;
@@ -2118,7 +2161,7 @@ physical_eval_port_binding(struct physical_ctx *p_ctx,
                           p_ctx->local_bindings,
                           p_ctx->patch_ofports,
                           p_ctx->chassis_tunnels,
-                          pb, p_ctx->chassis, &p_ctx->debug,
+                          pb, p_ctx->chassis, &p_ctx->debug, p_ctx->br_int,
                           flow_table, &ofpacts);
     ofpbuf_uninit(&ofpacts);
 }
@@ -2242,7 +2285,7 @@ physical_run(struct physical_ctx *p_ctx,
                               p_ctx->local_bindings,
                               p_ctx->patch_ofports,
                               p_ctx->chassis_tunnels, binding,
-                              p_ctx->chassis, &p_ctx->debug,
+                              p_ctx->chassis, &p_ctx->debug, p_ctx->br_int,
                               flow_table, &ofpacts);
     }
 
