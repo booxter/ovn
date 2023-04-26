@@ -15222,6 +15222,8 @@ payload() {
 
 OVN_POPULATE_ARP
 
+as main ovn-sbctl list Port_Binding
+
 reset_env
 
 AS_BOX([Packets of proper size are delivered from multichassis to regular ports])

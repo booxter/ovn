@@ -1142,7 +1142,7 @@ static void
 determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
                          const struct sbrec_port_binding *binding,
                          const struct sbrec_port_binding *mcp,
-                         bool is_ipv6, int direction)
+                         uint16_t max_mtu, bool is_ipv6, int direction)
 {
     struct ofpbuf ofpacts;
     ofpbuf_init(&ofpacts, 0);
@@ -1154,11 +1154,9 @@ determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
     match_set_reg(&match, direction - MFF_REG0, mcp->tunnel_key);
 
-    /* TODO: get mtu from interface of the tunnel */
-    uint16_t frag_mtu = 1400;
     struct ofpact_check_pkt_larger *pkt_larger =
         ofpact_put_CHECK_PKT_LARGER(&ofpacts);
-    pkt_larger->pkt_len = frag_mtu;
+    pkt_larger->pkt_len = max_mtu;
     pkt_larger->dst.field = mf_from_id(MFF_REG9);
     pkt_larger->dst.ofs = 1;
 
@@ -1176,7 +1174,7 @@ determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 static void
 reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
                                 const struct sbrec_port_binding *binding,
-                                bool is_ipv6)
+                                uint16_t max_mtu, bool is_ipv6)
 {
     struct match match;
     match_init_catchall(&match);
@@ -1224,10 +1222,12 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 
     /* ip.ttl */
     // TODO(ihar): check if this is needed
+    // TODO(ihar): should it be 255 necessarily if so? not e.g. 1?
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
-    uint16_t frag_mtu = 1400; // TODO: dedup
+    // TODO: why 200?
+    uint16_t frag_mtu = max_mtu - 200; // TODO: dedup
     if (is_ipv6) {
         /* icmp6.type = 2 (Packet Too Big) */
         /* icmp6.code = 0 */
@@ -1242,7 +1242,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
         size_t frag_mtu_oc_offset = encode_start_controller_op(
             ACTION_OPCODE_PUT_ICMP6_FRAG_MTU, true, NX_CTLR_NO_METER,
             &inner_ofpacts);
-        ovs_be32 frag_mtu_ovs = htonl(frag_mtu - 200);
+        ovs_be32 frag_mtu_ovs = htonl(frag_mtu);
         ofpbuf_put(&inner_ofpacts, &frag_mtu_ovs, sizeof(frag_mtu_ovs));
         encode_finish_controller_op(frag_mtu_oc_offset, &inner_ofpacts);
     } else {
@@ -1259,7 +1259,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
         size_t frag_mtu_oc_offset = encode_start_controller_op(
             ACTION_OPCODE_PUT_ICMP4_FRAG_MTU, true, NX_CTLR_NO_METER,
             &inner_ofpacts);
-        ovs_be16 frag_mtu_ovs = htons(frag_mtu - 200);
+        ovs_be16 frag_mtu_ovs = htons(frag_mtu);
         ofpbuf_put(&inner_ofpacts, &frag_mtu_ovs, sizeof(frag_mtu_ovs));
         encode_finish_controller_op(frag_mtu_oc_offset, &inner_ofpacts);
     }
@@ -1280,6 +1280,19 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 
     ofpbuf_uninit(&inner_ofpacts);
     ofpbuf_uninit(&ofpacts);
+}
+
+// TODO: remove UNUSED
+static uint16_t
+get_effective_mtu(const struct sbrec_port_binding *mcp OVS_UNUSED,
+                  struct ovs_list *remote_tunnels OVS_UNUSED)
+{
+    // find interface for mcp
+    // extract its official mtu
+    // iterate over tunnels
+    // find the "largest" tunnel overhead
+    // substract the overlead from official mtu
+    return 1400;
 }
 
 static void
@@ -1335,16 +1348,24 @@ enforce_tunneling_for_multichassis_ports(
                         &binding->header_.uuid);
         ofpbuf_uninit(&ofpacts);
 
+        uint16_t max_mtu = get_effective_mtu(mcp, tuns);
+        if (!max_mtu) {
+            continue;
+        }
         // TODO(ihar): dedup
         bool is_ipv6 = false;
-        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_INPORT);
-        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_OUTPORT);
-        reply_imcp_error_if_pkt_too_big(flow_table, binding, is_ipv6);
+        determine_if_pkt_too_big(
+            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_INPORT);
+        determine_if_pkt_too_big(
+            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_OUTPORT);
+        reply_imcp_error_if_pkt_too_big(flow_table, binding, max_mtu, is_ipv6);
 
         is_ipv6 = true;
-        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_INPORT);
-        determine_if_pkt_too_big(flow_table, binding, mcp, is_ipv6, MFF_LOG_OUTPORT);
-        reply_imcp_error_if_pkt_too_big(flow_table, binding, is_ipv6);
+        determine_if_pkt_too_big(
+            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_INPORT);
+        determine_if_pkt_too_big(
+            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_OUTPORT);
+        reply_imcp_error_if_pkt_too_big(flow_table, binding, max_mtu, is_ipv6);
     }
 
     struct tunnel *tun_elem;
