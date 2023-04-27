@@ -1187,11 +1187,14 @@ determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 static void
 reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
                                 const struct sbrec_port_binding *binding,
-                                uint16_t max_mtu, bool is_ipv6)
+                                const struct sbrec_port_binding *mcp,
+                                uint16_t max_mtu, bool is_ipv6, int direction)
 {
     struct match match;
     match_init_catchall(&match);
     match_set_dl_type(&match, htons(is_ipv6 ? ETH_TYPE_IPV6 : ETH_TYPE_IP));
+    match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
+    match_set_reg(&match, direction - MFF_REG0, mcp->tunnel_key);
     match_set_reg_masked(&match, MFF_REG9 - MFF_REG0, 1 << 1, 1 << 1);
 
     /* Return ICMP error with a part of the original IP packet included. */
@@ -1363,18 +1366,23 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     return iface_mtu - overhead;
 }
 
-// TODO: do we really need both binding and mcp?
 static void
 handle_pkt_too_big_for_ip_version(struct ovn_desired_flow_table *flow_table,
                                   const struct sbrec_port_binding *binding,
                                   const struct sbrec_port_binding *mcp,
                                   uint16_t max_mtu, bool is_ipv6)
 {
+    /* ingress */
     determine_if_pkt_too_big(flow_table, binding, mcp, max_mtu, is_ipv6,
                              MFF_LOG_INPORT);
+    reply_imcp_error_if_pkt_too_big(flow_table, binding, mcp, max_mtu, is_ipv6,
+                                    MFF_LOG_INPORT);
+
+    /* egress */
     determine_if_pkt_too_big(flow_table, binding, mcp, max_mtu, is_ipv6,
                              MFF_LOG_OUTPORT);
-    reply_imcp_error_if_pkt_too_big(flow_table, binding, max_mtu, is_ipv6);
+    reply_imcp_error_if_pkt_too_big(flow_table, binding, mcp, max_mtu, is_ipv6,
+                                    MFF_LOG_OUTPORT);
 }
 
 static void
