@@ -1289,6 +1289,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     ofpbuf_uninit(&ofpacts);
 }
 
+// TODO: are these definitions defined somewhere else / can be deduced from somewhere?
 #define GENEVE_TUNNEL_OVERHEAD 38
 #define VXLAN_TUNNEL_OVERHEAD 30
 #define IPV4_TUNNEL_OVERHEAD 20
