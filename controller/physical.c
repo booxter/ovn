@@ -1162,6 +1162,7 @@ determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     match_set_metadata(&match, htonll(binding->datapath->tunnel_key));
     match_set_reg(&match, direction - MFF_REG0, mcp->tunnel_key);
 
+    /* reg9[1] is REGBIT_PKT_LARGER as defined by northd */
     struct ofpact_check_pkt_larger *pkt_larger =
         ofpact_put_CHECK_PKT_LARGER(&ofpacts);
     pkt_larger->pkt_len = max_mtu;
@@ -1206,11 +1207,8 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     struct ofpbuf inner_ofpacts;
     ofpbuf_init(&inner_ofpacts, 0);
 
-    /* The new error packet is no longer too large */
-    /* REGBIT_PKT_LARGER = 0 */
-    // TODO(ihar) Should we allocate the register somehow? Or is it already
-    // allocated e.g. by OVN action? Or is there a definition of PKT_LARGER
-    // somewhere that maps it to reg9[1]?
+    /* The error packet is no longer too large, set REGBIT_PKT_LARGER = 0 */
+    /* reg9[1] is REGBIT_PKT_LARGER as defined by northd */
     ovs_be32 value = htonl(0);
     ovs_be32 mask = htonl(1 << 1);
     ofpact_put_set_field(
