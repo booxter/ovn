@@ -1324,11 +1324,7 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
                   struct ovs_list *remote_tunnels,
                   const struct ovsrec_bridge *br_int)
 {
-    // find interface for mcp
     // TODO: use if_status_mgr - will need to first collect mtus there
-    // TODO: should we extract base mtu from localnet port instead? that's what
-    // ACTUALLY worked before the live migration (is mtu for localnet a thing
-    // though?)
     const struct ovsrec_interface *iface = NULL;
     for (size_t i = 0; i < br_int->n_ports; i++) {
         const struct ovsrec_port *port = br_int->ports[i];
