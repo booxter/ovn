@@ -1233,7 +1233,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
-    uint16_t frag_mtu = max_mtu - ETHERNET_OVERHEAD; // TODO: dedup
+    uint16_t frag_mtu = max_mtu - ETHERNET_OVERHEAD;
     size_t frag_mtu_oc_offset;
     if (is_ipv6) {
         /* icmp6.type = 2 (Packet Too Big) */
