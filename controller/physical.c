@@ -78,13 +78,6 @@ static struct uuid *hc_uuid = NULL;
 
 #define CHASSIS_MAC_TO_ROUTER_MAC_CONJID        100
 
-// TODO: are these definitions defined somewhere else / can be deduced from somewhere?
-// TODO: at least we should move them somewhere, maybe?
-#define ETHERNET_OVERHEAD 18
-#define IPV4_TUNNEL_OVERHEAD 20
-#define GENEVE_TUNNEL_OVERHEAD 38
-#define VXLAN_TUNNEL_OVERHEAD 30
-
 void
 physical_register_ovs_idl(struct ovsdb_idl *ovs_idl)
 {
@@ -1141,6 +1134,15 @@ encode_finish_controller_op(size_t ofs, struct ofpbuf *ofpacts)
     oc->userdata_len = ofpacts->size - (ofs + sizeof *oc);
     ofpact_finish_CONTROLLER(ofpacts, &oc);
 }
+
+// TODO: at least we should move them somewhere, maybe?
+#define ETH_HEADER_LENGTH 14
+#define ETH_CRC_LENGTH 4
+#define ETHERNET_OVERHEAD (ETH_HEADER_LENGTH + ETH_CRC_LENGTH)
+
+#define IPV4_TUNNEL_OVERHEAD 20
+#define GENEVE_TUNNEL_OVERHEAD 38
+#define VXLAN_TUNNEL_OVERHEAD 30
 
 /*
  * Insert a flow to determine if an IP packet is too big for the corresponding
