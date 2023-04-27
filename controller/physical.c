@@ -1289,6 +1289,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 }
 
 // TODO: are these definitions defined somewhere else / can be deduced from somewhere?
+// TODO: at least we should move them somewhere, maybe?
 #define ETHERNET_OVERHEAD 18
 #define IPV4_TUNNEL_OVERHEAD 20
 #define GENEVE_TUNNEL_OVERHEAD 38
@@ -1329,9 +1330,7 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     // TODO: should we extract base mtu from localnet port instead? that's what
     // ACTUALLY worked before the live migration (is mtu for localnet a thing
     // though?)
-    VLOG_ERR("IHAR mcp = %s", mcp->logical_port);
     const struct ovsrec_interface *iface = NULL;
-    VLOG_ERR("IHAR iterate over %ld ports of bridge: %s", br_int->n_ports, br_int->name);
     for (size_t i = 0; i < br_int->n_ports; i++) {
         const struct ovsrec_port *port = br_int->ports[i];
         for (size_t j = 0; j < port->n_interfaces; j++) {
@@ -1347,20 +1346,16 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     }
 
     if (!iface || !iface->n_mtu || iface->mtu[0] <= 0) {
-        VLOG_ERR("IHAR bail out 1");
         return 0;
     }
     // extract its official mtu
     uint16_t iface_mtu = (uint16_t) iface->mtu[0];
-    VLOG_ERR("IHAR mtu = %d", iface_mtu);
 
     // iterate over all peer tunnels and find the biggest tunnel overhead
     uint16_t overhead = 0;
     struct tunnel *tun;
     LIST_FOR_EACH (tun, list_node, remote_tunnels) {
-        VLOG_ERR("IHAR check tunnel to %s", tun->tun->chassis_id);
         uint16_t tunnel_overhead = get_tunnel_overhead(tun->tun);
-        VLOG_ERR("IHAR tunnel overhead %d", tunnel_overhead);
         if (tunnel_overhead > overhead) {
             overhead = tunnel_overhead;
         }
@@ -1429,7 +1424,6 @@ enforce_tunneling_for_multichassis_ports(
 
         // TODO: optimize? build a dict of name to interface lazily?
         uint16_t max_mtu = get_effective_mtu(mcp, tuns, br_int);
-        VLOG_ERR("IHAR got max_mtu = %d", max_mtu);
         if (!max_mtu) {
             continue;
         }
