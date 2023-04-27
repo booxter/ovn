@@ -1309,9 +1309,8 @@ get_tunnel_overhead(struct chassis_tunnel const *tun)
             overhead += VXLAN_TUNNEL_OVERHEAD;
             break;
         default:
-            // TODO(ihar) better message?
-            VLOG_WARN("Unknown tunnel type %d, can't determine header size",
-                      tun->type);
+            VLOG_WARN("Unknown tunnel type %d, can't determine overhead size "
+                      "for Path MTU Discovery", tun->type);
             return 0;
     }
     overhead += IPV4_TUNNEL_OVERHEAD; // TODO: track tunnel ip version
