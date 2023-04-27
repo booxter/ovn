@@ -1233,8 +1233,9 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
-    // TODO: why 200? should be - size of eth header I think
-    uint16_t frag_mtu = max_mtu - 200; // TODO: dedup
+    // TODO: is it the right value for ethernet overhead that we should
+    // subtract from total mtu for icmp too-big value?
+    uint16_t frag_mtu = max_mtu - 18; // TODO: dedup
     size_t frag_mtu_oc_offset;
     if (is_ipv6) {
         /* icmp6.type = 2 (Packet Too Big) */
@@ -1317,6 +1318,7 @@ get_tunnel_overhead(struct chassis_tunnel const *tun)
     return overhead;
 }
 
+// TODO(ihar): should we handle mtu change to interfaces somehow? add test case for this
 // TODO(ihar): move mtu related functions to a separate module - mtu.c?
 static uint16_t
 get_effective_mtu(const struct sbrec_port_binding *mcp,

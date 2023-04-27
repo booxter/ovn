@@ -15168,7 +15168,7 @@ send_ip_packet() {
       packet=$(fmt_pkt "
           Ether(dst='${eth_src}', src='${eth_dst}') /
           IP(src='${ipv4_dst}', dst='${ipv4_src}', ttl=255, flags=2, id=0) /
-          ICMP(type=3, code=4, nexthopmtu=1242) /
+          ICMP(type=3, code=4, nexthopmtu=1424) /
           bytes.fromhex('${original_ip_frame:0:$((534 * 2))}')
       ")
     fi
@@ -15192,7 +15192,7 @@ send_ip6_packet() {
       packet=$(fmt_pkt "
           Ether(dst='${eth_src}', src='${eth_dst}') /
           IPv6(src='${ipv6_dst}', dst='${ipv6_src}', hlim=255) /
-          ICMPv6PacketTooBig(mtu=1242) /
+          ICMPv6PacketTooBig(mtu=1424) /
           bytes.fromhex('${original_ip_frame:0:$((1218 * 2))}')
       ")
     fi
