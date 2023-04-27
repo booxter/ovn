@@ -78,6 +78,13 @@ static struct uuid *hc_uuid = NULL;
 
 #define CHASSIS_MAC_TO_ROUTER_MAC_CONJID        100
 
+// TODO: are these definitions defined somewhere else / can be deduced from somewhere?
+// TODO: at least we should move them somewhere, maybe?
+#define ETHERNET_OVERHEAD 18
+#define IPV4_TUNNEL_OVERHEAD 20
+#define GENEVE_TUNNEL_OVERHEAD 38
+#define VXLAN_TUNNEL_OVERHEAD 30
+
 void
 physical_register_ovs_idl(struct ovsdb_idl *ovs_idl)
 {
@@ -1288,13 +1295,6 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     ofpbuf_uninit(&ofpacts);
 }
 
-// TODO: are these definitions defined somewhere else / can be deduced from somewhere?
-// TODO: at least we should move them somewhere, maybe?
-#define ETHERNET_OVERHEAD 18
-#define IPV4_TUNNEL_OVERHEAD 20
-#define GENEVE_TUNNEL_OVERHEAD 38
-#define VXLAN_TUNNEL_OVERHEAD 30
-
 static uint16_t
 get_tunnel_overhead(struct chassis_tunnel const *tun)
 {
@@ -1363,6 +1363,36 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     return iface_mtu - overhead;
 }
 
+// TODO: do we really need both binding and mcp?
+static void
+handle_pkt_too_big_for_ip_version(struct ovn_desired_flow_table *flow_table,
+                                  const struct sbrec_port_binding *binding,
+                                  const struct sbrec_port_binding *mcp,
+                                  uint16_t max_mtu, bool is_ipv6)
+{
+    determine_if_pkt_too_big(flow_table, binding, mcp, max_mtu, is_ipv6,
+                             MFF_LOG_INPORT);
+    determine_if_pkt_too_big(flow_table, binding, mcp, max_mtu, is_ipv6,
+                             MFF_LOG_OUTPORT);
+    reply_imcp_error_if_pkt_too_big(flow_table, binding, max_mtu, is_ipv6);
+}
+
+static void
+handle_pkt_too_big(struct ovn_desired_flow_table *flow_table,
+                   struct ovs_list *remote_tunnels,
+                   const struct ovsrec_bridge *br_int,
+                   const struct sbrec_port_binding *binding,
+                   const struct sbrec_port_binding *mcp)
+{
+    // TODO: optimize? build a dict of name to interface lazily?
+    uint16_t max_mtu = get_effective_mtu(mcp, remote_tunnels, br_int);
+    if (!max_mtu) {
+        return;
+    }
+    handle_pkt_too_big_for_ip_version(flow_table, binding, mcp, max_mtu, false);
+    handle_pkt_too_big_for_ip_version(flow_table, binding, mcp, max_mtu, true);
+}
+
 static void
 enforce_tunneling_for_multichassis_ports(
     struct local_datapath *ld,
@@ -1417,25 +1447,7 @@ enforce_tunneling_for_multichassis_ports(
                         &binding->header_.uuid);
         ofpbuf_uninit(&ofpacts);
 
-        // TODO: optimize? build a dict of name to interface lazily?
-        uint16_t max_mtu = get_effective_mtu(mcp, tuns, br_int);
-        if (!max_mtu) {
-            continue;
-        }
-        // TODO(ihar): dedup
-        bool is_ipv6 = false;
-        determine_if_pkt_too_big(
-            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_INPORT);
-        determine_if_pkt_too_big(
-            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_OUTPORT);
-        reply_imcp_error_if_pkt_too_big(flow_table, binding, max_mtu, is_ipv6);
-
-        is_ipv6 = true;
-        determine_if_pkt_too_big(
-            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_INPORT);
-        determine_if_pkt_too_big(
-            flow_table, binding, mcp, max_mtu, is_ipv6, MFF_LOG_OUTPORT);
-        reply_imcp_error_if_pkt_too_big(flow_table, binding, max_mtu, is_ipv6);
+        handle_pkt_too_big(flow_table, tuns, br_int, binding, mcp);
     }
 
     struct tunnel *tun_elem;
