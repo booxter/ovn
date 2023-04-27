@@ -15164,10 +15164,11 @@ send_ip_packet() {
       ")
       # IP(flags=2) means DF (Don't Fragment) = 1
       # ICMP(type=3, code=4) means Destination Unreachable, Fragmentation Needed
+      # TODO(ihar) extract mtu value / calculate it properly
       packet=$(fmt_pkt "
           Ether(dst='${eth_src}', src='${eth_dst}') /
           IP(src='${ipv4_dst}', dst='${ipv4_src}', ttl=255, flags=2, id=0) /
-          ICMP(type=3, code=4, nexthopmtu=1200) /
+          ICMP(type=3, code=4, nexthopmtu=1242) /
           bytes.fromhex('${original_ip_frame:0:$((534 * 2))}')
       ")
     fi
@@ -15187,10 +15188,11 @@ send_ip6_packet() {
         IPv6(src='${ipv6_src}', dst='${ipv6_dst}') /
         ICMPv6EchoRequest() / bytes.fromhex('${data}')
       ")
+      # TODO(ihar) extract mtu value / calculate it properly
       packet=$(fmt_pkt "
           Ether(dst='${eth_src}', src='${eth_dst}') /
           IPv6(src='${ipv6_dst}', dst='${ipv6_src}', hlim=255) /
-          ICMPv6PacketTooBig(mtu=1200) /
+          ICMPv6PacketTooBig(mtu=1242) /
           bytes.fromhex('${original_ip_frame:0:$((1218 * 2))}')
       ")
     fi

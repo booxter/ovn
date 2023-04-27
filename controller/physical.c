@@ -1172,6 +1172,11 @@ determine_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
  * Insert a flow to reply with ICMP error for IP packets that are too big for
  * the corresponding egress interface.
  */
+/*
+ * TODO(ihrachys) This reimplements icmp_error as found in
+ * build_icmperr_pkt_big_flows. We may look into reusing the existing OVN
+ * action for this flow in the future.
+ */
 static void
 reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
                                 const struct sbrec_port_binding *binding,
@@ -1193,6 +1198,9 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 
     /* The new error packet is no longer too large */
     /* REGBIT_PKT_LARGER = 0 */
+    // TODO(ihar) Should we allocate the register somehow? Or is it already
+    // allocated e.g. by OVN action? Or is there a definition of PKT_LARGER
+    // somewhere that maps it to reg9[1]?
     ovs_be32 value = htonl(0);
     ovs_be32 mask = htonl(1 << 1);
     ofpact_put_set_field(
@@ -1221,9 +1229,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     put_stack(is_ipv6 ? MFF_IPV6_SRC : MFF_IPV4_SRC,
         ofpact_put_STACK_POP(&inner_ofpacts));
 
-    /* ip.ttl */
-    // TODO(ihar): check if this is needed
-    // TODO(ihar): should it be 255 necessarily if so? not e.g. 1?
+    /* ip.ttl = 255 */
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
@@ -1283,10 +1289,31 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     ofpbuf_uninit(&ofpacts);
 }
 
+#define GENEVE_TUNNEL_OVERHEAD 38
+#define VXLAN_TUNNEL_OVERHEAD 30
+#define IPV4_TUNNEL_OVERHEAD 20
+
 static uint16_t
-get_tunnel_overhead(enum chassis_tunnel_type type OVS_UNUSED)
+get_tunnel_overhead(struct chassis_tunnel const *tun)
 {
-    return 100;
+    uint16_t overhead = 0;
+    switch (tun->type) {
+        case GENEVE:
+            overhead += GENEVE_TUNNEL_OVERHEAD;
+            break;
+        case STT:
+            return 0; // TODO
+        case VXLAN:
+            overhead += VXLAN_TUNNEL_OVERHEAD;
+            break;
+        default:
+            // TODO(ihar) better message?
+            VLOG_WARN("Unknown tunnel type %d, can't determine header size",
+                      tun->type);
+            return 0;
+    }
+    overhead += IPV4_TUNNEL_OVERHEAD; // TODO: track tunnel ip version
+    return overhead;
 }
 
 static uint16_t
@@ -1296,7 +1323,9 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
 {
     // find interface for mcp
     // TODO: use if_status_mgr - will need to first collect mtus there
-    // TODO: should we extract mtu from localnet port instead? (is it a thing?)
+    // TODO: should we extract base mtu from localnet port instead? that's what
+    // ACTUALLY worked before the live migration (is mtu for localnet a thing
+    // though?)
     const struct ovsrec_interface *iface = NULL;
     for (size_t i = 0; i < br_int->n_ports; i++) {
         const struct ovsrec_port *port = br_int->ports[i];
@@ -1320,7 +1349,7 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     uint16_t overhead = 0;
     struct tunnel *tun;
     LIST_FOR_EACH (tun, list_node, remote_tunnels) {
-        uint16_t tunnel_overhead = get_tunnel_overhead(tun->tun->type);
+        uint16_t tunnel_overhead = get_tunnel_overhead(tun->tun);
         if (tunnel_overhead > overhead) {
             overhead = tunnel_overhead;
         }
