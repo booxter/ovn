@@ -1316,6 +1316,7 @@ get_tunnel_overhead(struct chassis_tunnel const *tun)
     return overhead;
 }
 
+// TODO(ihar): move mtu related functions to a separate module - mtu.c?
 static uint16_t
 get_effective_mtu(const struct sbrec_port_binding *mcp,
                   struct ovs_list *remote_tunnels,
