@@ -1233,9 +1233,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
-    // TODO: is it the right value for ethernet overhead that we should
-    // subtract from total mtu for icmp too-big value?
-    uint16_t frag_mtu = max_mtu - 18; // TODO: dedup
+    uint16_t frag_mtu = max_mtu - ETHERNET_OVERHEAD; // TODO: dedup
     size_t frag_mtu_oc_offset;
     if (is_ipv6) {
         /* icmp6.type = 2 (Packet Too Big) */
@@ -1291,9 +1289,10 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
 }
 
 // TODO: are these definitions defined somewhere else / can be deduced from somewhere?
+#define ETHERNET_OVERHEAD 18
+#define IPV4_TUNNEL_OVERHEAD 20
 #define GENEVE_TUNNEL_OVERHEAD 38
 #define VXLAN_TUNNEL_OVERHEAD 30
-#define IPV4_TUNNEL_OVERHEAD 20
 
 static uint16_t
 get_tunnel_overhead(struct chassis_tunnel const *tun)
