@@ -1233,7 +1233,7 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     struct ofpact_ip_ttl *ip_ttl = ofpact_put_SET_IP_TTL(&inner_ofpacts);
     ip_ttl->ttl = 255;
 
-    // TODO: why 200?
+    // TODO: why 200? should be - size of eth header I think
     uint16_t frag_mtu = max_mtu - 200; // TODO: dedup
     size_t frag_mtu_oc_offset;
     if (is_ipv6) {
@@ -1328,30 +1328,38 @@ get_effective_mtu(const struct sbrec_port_binding *mcp,
     // TODO: should we extract base mtu from localnet port instead? that's what
     // ACTUALLY worked before the live migration (is mtu for localnet a thing
     // though?)
+    VLOG_ERR("IHAR mcp = %s", mcp->logical_port);
     const struct ovsrec_interface *iface = NULL;
+    VLOG_ERR("IHAR iterate over %ld ports of bridge: %s", br_int->n_ports, br_int->name);
     for (size_t i = 0; i < br_int->n_ports; i++) {
         const struct ovsrec_port *port = br_int->ports[i];
-        if (strcmp(port->name, mcp->logical_port)) {
-            continue;
+        for (size_t j = 0; j < port->n_interfaces; j++) {
+            const char *iface_id = smap_get(&port->interfaces[j]->external_ids, "iface-id");
+            if (iface_id && !strcmp(iface_id, mcp->logical_port)) {
+                iface = port->interfaces[j];
+                break;
+            }
         }
-        if (!port->n_interfaces) {
-            return 0;
+        if (iface) {
+            break;
         }
-        iface = port->interfaces[0];
-        break;
-    }
-    if (!iface || !iface->n_mtu || iface->mtu[0] <= 0) {
-        return 0;
     }
 
+    if (!iface || !iface->n_mtu || iface->mtu[0] <= 0) {
+        VLOG_ERR("IHAR bail out 1");
+        return 0;
+    }
     // extract its official mtu
     uint16_t iface_mtu = (uint16_t) iface->mtu[0];
+    VLOG_ERR("IHAR mtu = %d", iface_mtu);
 
     // iterate over all peer tunnels and find the biggest tunnel overhead
     uint16_t overhead = 0;
     struct tunnel *tun;
     LIST_FOR_EACH (tun, list_node, remote_tunnels) {
+        VLOG_ERR("IHAR check tunnel to %s", tun->tun->chassis_id);
         uint16_t tunnel_overhead = get_tunnel_overhead(tun->tun);
+        VLOG_ERR("IHAR tunnel overhead %d", tunnel_overhead);
         if (tunnel_overhead > overhead) {
             overhead = tunnel_overhead;
         }
@@ -1420,6 +1428,7 @@ enforce_tunneling_for_multichassis_ports(
 
         // TODO: optimize? build a dict of name to interface lazily?
         uint16_t max_mtu = get_effective_mtu(mcp, tuns, br_int);
+        VLOG_ERR("IHAR got max_mtu = %d", max_mtu);
         if (!max_mtu) {
             continue;
         }
