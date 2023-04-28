@@ -1835,7 +1835,6 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
             }
         }
 
-        // TODO(ihrachys): update numbers in docs and all other places
         /* Table 40, priority 150.
          * =======================
          *

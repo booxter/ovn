@@ -63,7 +63,7 @@ struct uuid;
  *
  * These are heavily documented in ovn-architecture(7), please update it if
  * you make any changes. */
-/* TODO(ihrachys): update ovn-architecture */
+/* TODO(ihrachys): update ovn-architecture to list the new tables */
 #define OFTABLE_PHY_TO_LOG                0
 #define OFTABLE_LOG_INGRESS_PIPELINE      8 /* First of LOG_PIPELINE_LEN tables. */
 #define OFTABLE_OUTPUT_INIT              37

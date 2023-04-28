@@ -12293,8 +12293,8 @@ as hv1 ovs-appctl netdev-dummy/receive hv1-vif1 $packet
 as hv1 ovs-appctl ofproto/trace br-int in_port=hv1-vif1 $packet
 sleep 2
 
-AS_BOX([On hv1, table 37 check that no packet goes via the tunnel port])
-OVS_WAIT_FOR_OUTPUT([as hv1 ovs-ofctl dump-flows br-int table=37 \
+AS_BOX([On hv1, table 40 check that no packet goes via the tunnel port])
+OVS_WAIT_FOR_OUTPUT([as hv1 ovs-ofctl dump-flows br-int table=40 \
 | grep "NXM_NX_TUN_ID" | grep -v n_packets=0 | wc -l], [0], [[0
 ]])
 
