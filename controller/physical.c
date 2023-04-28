@@ -1136,17 +1136,6 @@ encode_finish_controller_op(size_t ofs, struct ofpbuf *ofpacts)
     ofpact_finish_CONTROLLER(ofpacts, &oc);
 }
 
-// TODO: at least we should move them somewhere, maybe?
-#define ETH_HEADER_LENGTH 14
-#define ETH_CRC_LENGTH 4
-#define ETHERNET_OVERHEAD (ETH_HEADER_LENGTH + ETH_CRC_LENGTH)
-
-#define IPV4_TUNNEL_OVERHEAD 20
-#define IPV6_TUNNEL_OVERHEAD 40
-#define GENEVE_TUNNEL_OVERHEAD 38
-#define STT_TUNNEL_OVERHEAD 18
-#define VXLAN_TUNNEL_OVERHEAD 30
-
 /*
  * Insert a flow to determine if an IP packet is too big for the corresponding
  * egress interface.
@@ -1318,12 +1307,11 @@ get_tunnel_overhead(struct chassis_tunnel const *tun)
                           "for Path MTU Discovery", type);
         return 0;
     }
-    overhead += tun->is_ipv6? IPV6_TUNNEL_OVERHEAD : IPV4_TUNNEL_OVERHEAD;
+    overhead += tun->is_ipv6? IPV6_HEADER_LEN : IPV4_HEADER_LEN;
     return overhead;
 }
 
 // TODO(ihar): should we handle mtu change to interfaces somehow? add test case for this
-// TODO(ihar): move mtu related functions to a separate module - mtu.c?
 static uint16_t
 get_effective_mtu(const struct sbrec_port_binding *mcp,
                   struct ovs_list *remote_tunnels,
