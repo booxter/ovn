@@ -1032,9 +1032,6 @@ set_pb_chassis_in_sbrec(const struct sbrec_port_binding *pb,
     }
 }
 
-// TODO(ihar) maybe it should belong to a separate patch since it's a bug in
-// additional chassis implementation - we don't register additional interfaces
-// with if_status_mgr?
 void
 set_pb_additional_chassis_in_sbrec(const struct sbrec_port_binding *pb,
                                    const struct sbrec_chassis *chassis_rec,
