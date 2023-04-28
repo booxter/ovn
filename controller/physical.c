@@ -1141,6 +1141,7 @@ encode_finish_controller_op(size_t ofs, struct ofpbuf *ofpacts)
 #define ETHERNET_OVERHEAD (ETH_HEADER_LENGTH + ETH_CRC_LENGTH)
 
 #define IPV4_TUNNEL_OVERHEAD 20
+#define IPV6_TUNNEL_OVERHEAD 40
 #define GENEVE_TUNNEL_OVERHEAD 38
 #define VXLAN_TUNNEL_OVERHEAD 30
 
@@ -1316,7 +1317,7 @@ get_tunnel_overhead(struct chassis_tunnel const *tun)
                       "for Path MTU Discovery", tun->type);
             return 0;
     }
-    overhead += IPV4_TUNNEL_OVERHEAD; // TODO: track tunnel ip version
+    overhead += tun->is_ipv6? IPV6_TUNNEL_OVERHEAD : IPV4_TUNNEL_OVERHEAD;
     return overhead;
 }
 
