@@ -1144,6 +1144,7 @@ encode_finish_controller_op(size_t ofs, struct ofpbuf *ofpacts)
 #define IPV4_TUNNEL_OVERHEAD 20
 #define IPV6_TUNNEL_OVERHEAD 40
 #define GENEVE_TUNNEL_OVERHEAD 38
+#define STT_TUNNEL_OVERHEAD 18
 #define VXLAN_TUNNEL_OVERHEAD 30
 
 /*
@@ -1304,19 +1305,18 @@ static uint16_t
 get_tunnel_overhead(struct chassis_tunnel const *tun)
 {
     uint16_t overhead = 0;
-    switch (tun->type) {
-        case GENEVE:
-            overhead += GENEVE_TUNNEL_OVERHEAD;
-            break;
-        case STT:
-            return 0; // TODO
-        case VXLAN:
-            overhead += VXLAN_TUNNEL_OVERHEAD;
-            break;
-        default:
-            VLOG_WARN("Unknown tunnel type %d, can't determine overhead size "
-                      "for Path MTU Discovery", tun->type);
-            return 0;
+    enum chassis_tunnel_type type = tun->type;
+    if (type == GENEVE) {
+        overhead += GENEVE_TUNNEL_OVERHEAD;
+    } else if (type == STT) {
+        overhead += STT_TUNNEL_OVERHEAD;
+    } else if (type == VXLAN) {
+        overhead += VXLAN_TUNNEL_OVERHEAD;
+    } else {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+        VLOG_WARN_RL(&rl, "Unknown tunnel type %d, can't determine overhead size "
+                          "for Path MTU Discovery", type);
+        return 0;
     }
     overhead += tun->is_ipv6? IPV6_TUNNEL_OVERHEAD : IPV4_TUNNEL_OVERHEAD;
     return overhead;
