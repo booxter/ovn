@@ -24,6 +24,7 @@
 #include "lib/util.h"
 #include "timeval.h"
 #include "openvswitch/vlog.h"
+#include "lib/vswitch-idl.h"
 #include "lib/ovn-sb-idl.h"
 
 VLOG_DEFINE_THIS_MODULE(if_status);
@@ -146,6 +147,7 @@ struct ovs_iface {
                              * be fully programmed in OVS.  Only used in state
                              * OIF_INSTALL_FLOWS.
                              */
+    uint16_t mtu;           /* Extracted from OVS interface.mtu field. */
 };
 
 static uint64_t ifaces_usage;
@@ -167,9 +169,10 @@ struct if_status_mgr {
     uint32_t iface_seqno;
 };
 
-static struct ovs_iface *ovs_iface_create(struct if_status_mgr *,
-                                          const char *iface_id,
-                                          enum if_state );
+static struct ovs_iface *
+ovs_iface_create(struct if_status_mgr *, const char *iface_id,
+                 const struct ovsrec_interface *iface_rec,
+                 enum if_state);
 static void ovs_iface_destroy(struct if_status_mgr *, struct ovs_iface *);
 static void ovs_iface_set_state(struct if_status_mgr *, struct ovs_iface *,
                                 enum if_state);
@@ -221,18 +224,23 @@ if_status_mgr_destroy(struct if_status_mgr *mgr)
 void
 if_status_mgr_claim_iface(struct if_status_mgr *mgr,
                           const struct sbrec_port_binding *pb,
+                          const struct ovsrec_interface *iface_rec,
                           const struct sbrec_chassis *chassis_rec,
-                          bool sb_readonly)
+                          bool sb_readonly, enum can_bind bind_type)
 {
     const char *iface_id = pb->logical_port;
     struct ovs_iface *iface = shash_find_data(&mgr->ifaces, iface_id);
 
     if (!iface) {
-        iface = ovs_iface_create(mgr, iface_id, OIF_CLAIMED);
+        iface = ovs_iface_create(mgr, iface_id, iface_rec, OIF_CLAIMED);
     }
 
     if (!sb_readonly) {
-        set_pb_chassis_in_sbrec(pb, chassis_rec, true);
+        if (bind_type == CAN_BIND_AS_MAIN) {
+            set_pb_chassis_in_sbrec(pb, chassis_rec, true);
+        } else if (bind_type == CAN_BIND_AS_ADDITIONAL) {
+            set_pb_additional_chassis_in_sbrec(pb, chassis_rec, true);
+        }
     }
 
     switch (iface->state) {
@@ -492,14 +500,33 @@ ovs_iface_account_mem(const char *iface_id, bool erase)
     }
 }
 
+static uint16_t
+get_iface_mtu(const struct ovsrec_interface *iface)
+{
+    if (!iface || !iface->n_mtu || iface->mtu[0] <= 0) {
+        return 0;
+    }
+    return (uint16_t) iface->mtu[0];
+}
+
+uint16_t
+if_status_mgr_iface_get_mtu(const struct if_status_mgr *mgr,
+                            const char *iface_id)
+{
+    const struct ovs_iface *iface = shash_find_data(&mgr->ifaces, iface_id);
+    return iface ? iface->mtu : 0;
+}
+
 static struct ovs_iface *
 ovs_iface_create(struct if_status_mgr *mgr, const char *iface_id,
+                 const struct ovsrec_interface *iface_rec,
                  enum if_state state)
 {
     struct ovs_iface *iface = xzalloc(sizeof *iface);
 
     VLOG_DBG("Interface %s create.", iface_id);
     iface->id = xstrdup(iface_id);
+    iface->mtu = get_iface_mtu(iface_rec);
     shash_add_nocopy(&mgr->ifaces, iface->id, iface);
     ovs_iface_set_state(mgr, iface, state);
     ovs_iface_account_mem(iface_id, false);
