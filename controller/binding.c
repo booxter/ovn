@@ -1041,7 +1041,6 @@ set_pb_additional_chassis_in_sbrec(const struct sbrec_port_binding *pb,
                                    bool is_set)
 {
     if (!is_additional_chassis(pb, chassis_rec)) {
-        // TODO(ihar) This is repetitive, compare above
         VLOG_INFO("Claiming lport %s for this additional chassis.",
                   pb->logical_port);
         for (size_t i = 0; i < pb->n_mac; i++) {
